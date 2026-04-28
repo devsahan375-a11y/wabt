@@ -119,11 +119,11 @@ async function isGroupAdmin(groupJid, senderJid) {
 }
 
 async function sendReply(groupJid, text, quotedMessage) {
-  await sock.sendMessage(
-    groupJid,
-    { text },
-    { quoted: quotedMessage }
-  );
+  logger.debug({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
+
+  await sock.sendMessage(groupJid, { text }, { quoted: quotedMessage });
+
+  logger.info({ groupJid }, 'WhatsApp reply sent.');
 }
 
 function getChatHistory(groupJid) {
@@ -178,8 +178,18 @@ async function getOpenRouterReply(groupJid, senderName, text) {
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AI_REPLY_TIMEOUT_MS);
+  const startedAt = Date.now();
 
   try {
+    logger.info(
+      {
+        model: OPENROUTER_MODEL,
+        promptLength: text.length,
+        timeoutMs: AI_REPLY_TIMEOUT_MS
+      },
+      'Requesting OpenRouter reply.'
+    );
+
     const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
       signal: controller.signal,
@@ -205,6 +215,14 @@ async function getOpenRouterReply(groupJid, senderName, text) {
     } catch {
       data = { raw: responseText };
     }
+
+    logger.info(
+      {
+        status: response.status,
+        durationMs: Date.now() - startedAt
+      },
+      'OpenRouter response received.'
+    );
 
     if (!response.ok) {
       const message = data?.error?.message || response.statusText || 'OpenRouter request failed.';
@@ -233,6 +251,7 @@ async function handleAiReply({ groupJid, senderName, text, msg }) {
   }
 
   try {
+    logger.info({ groupJid, senderName }, 'Creating AI reply.');
     rememberChat(groupJid, 'user', `${senderName}: ${text}`);
     const reply = await getOpenRouterReply(groupJid, senderName, text);
     rememberChat(groupJid, 'assistant', reply);
