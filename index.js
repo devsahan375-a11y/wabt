@@ -8,17 +8,14 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
+import { applicationDefault, cert, initializeApp } from 'firebase-admin/app';
+import { getDatabase } from 'firebase-admin/database';
 
 const SESSION_FOLDER = 'session_data';
-const ALLOWED_GROUP_JID = process.env.ALLOWED_GROUP_JID;
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash';
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const AI_REPLY_TIMEOUT_MS = Number(process.env.AI_REPLY_TIMEOUT_MS || 30000);
-const AI_MAX_REPLY_LENGTH = Number(process.env.AI_MAX_REPLY_LENGTH || 1200);
-const AI_HISTORY_LIMIT = Number(process.env.AI_HISTORY_LIMIT || 12);
-const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS || 1200);
+const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || 'https://wabt-f47e4-default-rtdb.firebaseio.com';
+const FIREBASE_SETTINGS_PATH = process.env.FIREBASE_SETTINGS_PATH || 'botSettings';
 const DISCOVERY_PLACEHOLDER_JIDS = new Set([
   '000@g.us',
   '0000@g.us',
@@ -29,23 +26,23 @@ const logger = pino({
   level: LOG_LEVEL
 });
 
-if (!ALLOWED_GROUP_JID) {
-  logger.error('Missing ALLOWED_GROUP_JID. Copy .env.example to .env and set your group JID.');
-  process.exit(1);
-}
+const defaultSettings = {
+  ALLOWED_GROUP_JID: process.env.ALLOWED_GROUP_JID || '',
+  LOG_LEVEL,
+  OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || '',
+  OPENROUTER_MODEL: process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash',
+  AI_REPLY_TIMEOUT_MS: Number(process.env.AI_REPLY_TIMEOUT_MS || 30000),
+  AI_MAX_REPLY_LENGTH: Number(process.env.AI_MAX_REPLY_LENGTH || 1200),
+  AI_HISTORY_LIMIT: Number(process.env.AI_HISTORY_LIMIT || 12),
+  AI_MAX_TOKENS: Number(process.env.AI_MAX_TOKENS || 1200),
+  AI_TEMPERATURE: Number(process.env.AI_TEMPERATURE || 0.7),
+  SYSTEM_PROMPT: process.env.SYSTEM_PROMPT || '',
+  BOT_ENABLED: process.env.BOT_ENABLED !== 'false',
+  AI_ENABLED: process.env.AI_ENABLED !== 'false'
+};
 
-if (!ALLOWED_GROUP_JID.endsWith('@g.us')) {
-  logger.error({ allowedGroupJid: ALLOWED_GROUP_JID }, 'ALLOWED_GROUP_JID must be a WhatsApp group JID ending with @g.us.');
-  process.exit(1);
-}
-
-const isDiscoveryMode = DISCOVERY_PLACEHOLDER_JIDS.has(ALLOWED_GROUP_JID);
-
-if (!OPENROUTER_API_KEY && !isDiscoveryMode) {
-  logger.warn('OPENROUTER_API_KEY is missing. Commands will work, but AI replies will be disabled.');
-} else if (!isDiscoveryMode) {
-  logger.info({ model: OPENROUTER_MODEL }, 'OpenRouter replies are enabled.');
-}
+let settings = { ...defaultSettings };
+let firebaseSettingsRef;
 
 let sock;
 let isShuttingDown = false;
@@ -56,6 +53,141 @@ const chatHistory = new Map();
 // Commands are plain words, so normalization keeps matching simple and predictable.
 function normalizeText(text = '') {
   return text.trim().toLowerCase();
+}
+
+function toNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function toBoolean(value, fallback) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.toLowerCase() !== 'false';
+  return fallback;
+}
+
+function normalizeSettings(rawSettings = {}) {
+  return {
+    ...defaultSettings,
+    ...rawSettings,
+    ALLOWED_GROUP_JID: String(rawSettings.ALLOWED_GROUP_JID ?? defaultSettings.ALLOWED_GROUP_JID).trim(),
+    LOG_LEVEL: String(rawSettings.LOG_LEVEL ?? defaultSettings.LOG_LEVEL).trim() || 'info',
+    OPENROUTER_API_KEY: String(rawSettings.OPENROUTER_API_KEY ?? defaultSettings.OPENROUTER_API_KEY).trim(),
+    OPENROUTER_MODEL: String(rawSettings.OPENROUTER_MODEL ?? defaultSettings.OPENROUTER_MODEL).trim(),
+    AI_REPLY_TIMEOUT_MS: toNumber(rawSettings.AI_REPLY_TIMEOUT_MS, defaultSettings.AI_REPLY_TIMEOUT_MS),
+    AI_MAX_REPLY_LENGTH: toNumber(rawSettings.AI_MAX_REPLY_LENGTH, defaultSettings.AI_MAX_REPLY_LENGTH),
+    AI_HISTORY_LIMIT: toNumber(rawSettings.AI_HISTORY_LIMIT, defaultSettings.AI_HISTORY_LIMIT),
+    AI_MAX_TOKENS: toNumber(rawSettings.AI_MAX_TOKENS, defaultSettings.AI_MAX_TOKENS),
+    AI_TEMPERATURE: toNumber(rawSettings.AI_TEMPERATURE, defaultSettings.AI_TEMPERATURE),
+    SYSTEM_PROMPT: String(rawSettings.SYSTEM_PROMPT ?? defaultSettings.SYSTEM_PROMPT).trim(),
+    BOT_ENABLED: toBoolean(rawSettings.BOT_ENABLED, defaultSettings.BOT_ENABLED),
+    AI_ENABLED: toBoolean(rawSettings.AI_ENABLED, defaultSettings.AI_ENABLED)
+  };
+}
+
+function applySettings(nextSettings, source) {
+  settings = normalizeSettings(nextSettings);
+  logger.level = settings.LOG_LEVEL;
+
+  logger.info(
+    {
+      source,
+      allowedGroupJid: settings.ALLOWED_GROUP_JID,
+      model: settings.OPENROUTER_MODEL,
+      botEnabled: settings.BOT_ENABLED,
+      aiEnabled: settings.AI_ENABLED
+    },
+    'Runtime settings loaded.'
+  );
+
+  if (!settings.OPENROUTER_API_KEY && !isDiscoveryMode()) {
+    logger.warn('OPENROUTER_API_KEY is missing. Commands will work, but AI replies will be disabled.');
+  }
+}
+
+function getFirebaseCredential() {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    const json = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+    return cert(JSON.parse(json));
+  }
+
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    return cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON));
+  }
+
+  return applicationDefault();
+}
+
+function initializeFirebaseSettings() {
+  try {
+    const app = initializeApp({
+      credential: getFirebaseCredential(),
+      databaseURL: FIREBASE_DATABASE_URL
+    });
+
+    firebaseSettingsRef = getDatabase(app).ref(FIREBASE_SETTINGS_PATH);
+    logger.info({ path: FIREBASE_SETTINGS_PATH }, 'Firebase settings connected.');
+    return true;
+  } catch (error) {
+    logger.error({ error: serializeError(error) }, 'Firebase settings connection failed. Falling back to .env settings.');
+    return false;
+  }
+}
+
+async function loadFirebaseSettingsOnce() {
+  if (!firebaseSettingsRef) return false;
+
+  try {
+    const snapshot = await firebaseSettingsRef.once('value');
+    const value = snapshot.val();
+
+    if (value) {
+      applySettings(value, 'firebase-initial');
+    } else {
+      applySettings(defaultSettings, 'env-fallback-empty-firebase');
+      await firebaseSettingsRef.set({
+        ...settings,
+        initializedAt: new Date().toISOString()
+      });
+      logger.info('Created default /botSettings in Firebase.');
+    }
+
+    return true;
+  } catch (error) {
+    logger.error({ error: serializeError(error) }, 'Failed to load Firebase settings. Falling back to .env settings.');
+    return false;
+  }
+}
+
+function watchFirebaseSettings() {
+  if (!firebaseSettingsRef) return;
+
+  firebaseSettingsRef.on(
+    'value',
+    (snapshot) => {
+      const value = snapshot.val();
+      if (value) applySettings(value, 'firebase-live');
+    },
+    (error) => {
+      logger.error({ error: serializeError(error) }, 'Firebase settings listener failed.');
+    }
+  );
+}
+
+function validateSettingsOrExit() {
+  if (!settings.ALLOWED_GROUP_JID) {
+    logger.error('Missing ALLOWED_GROUP_JID. Set it in Firebase /botSettings or in .env.');
+    process.exit(1);
+  }
+
+  if (!settings.ALLOWED_GROUP_JID.endsWith('@g.us')) {
+    logger.error({ allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'ALLOWED_GROUP_JID must be a WhatsApp group JID ending with @g.us.');
+    process.exit(1);
+  }
+}
+
+function isDiscoveryMode() {
+  return DISCOVERY_PLACEHOLDER_JIDS.has(settings.ALLOWED_GROUP_JID);
 }
 
 function getErrorStatusCode(error) {
@@ -133,7 +265,7 @@ function getChatHistory(groupJid) {
 function rememberChat(groupJid, role, content) {
   const history = getChatHistory(groupJid);
   history.push({ role, content });
-  chatHistory.set(groupJid, history.slice(-AI_HISTORY_LIMIT));
+  chatHistory.set(groupJid, history.slice(-settings.AI_HISTORY_LIMIT));
 }
 
 function buildAiPrompt(groupJid, senderName, text) {
@@ -155,7 +287,8 @@ function buildAiPrompt(groupJid, senderName, text) {
         'Do not mention AI, OpenRouter, language model, assistant, or bot.',
         'Keep normal replies concise, but give steps or bullet points when the user asks for help or information.',
         'Do not invent facts. If you are unsure, say that you are not sure and suggest how to verify.',
-        'Use emojis rarely, only when they feel natural.'
+        'Use emojis rarely, only when they feel natural.',
+        settings.SYSTEM_PROMPT
       ].join(' ')
     },
     ...recentMessages,
@@ -167,25 +300,25 @@ function buildAiPrompt(groupJid, senderName, text) {
 }
 
 function trimReply(text) {
-  if (text.length <= AI_MAX_REPLY_LENGTH) return text;
-  return `${text.slice(0, AI_MAX_REPLY_LENGTH).trim()}...`;
+  if (text.length <= settings.AI_MAX_REPLY_LENGTH) return text;
+  return `${text.slice(0, settings.AI_MAX_REPLY_LENGTH).trim()}...`;
 }
 
 async function getOpenRouterReply(groupJid, senderName, text) {
-  if (!OPENROUTER_API_KEY) {
+  if (!settings.OPENROUTER_API_KEY) {
     throw new Error('OPENROUTER_API_KEY is not configured.');
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AI_REPLY_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), settings.AI_REPLY_TIMEOUT_MS);
   const startedAt = Date.now();
 
   try {
     logger.info(
       {
-        model: OPENROUTER_MODEL,
+        model: settings.OPENROUTER_MODEL,
         promptLength: text.length,
-        timeoutMs: AI_REPLY_TIMEOUT_MS
+        timeoutMs: settings.AI_REPLY_TIMEOUT_MS
       },
       'Requesting OpenRouter reply.'
     );
@@ -194,16 +327,16 @@ async function getOpenRouterReply(groupJid, senderName, text) {
       method: 'POST',
       signal: controller.signal,
       headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${settings.OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://localhost',
         'X-OpenRouter-Title': 'WhatsApp Group Only Bot'
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
+        model: settings.OPENROUTER_MODEL,
         messages: buildAiPrompt(groupJid, senderName, text),
-        temperature: 0.7,
-        max_tokens: AI_MAX_TOKENS
+        temperature: settings.AI_TEMPERATURE,
+        max_tokens: settings.AI_MAX_TOKENS
       })
     });
 
@@ -245,7 +378,12 @@ async function getOpenRouterReply(groupJid, senderName, text) {
 }
 
 async function handleAiReply({ groupJid, senderName, text, msg }) {
-  if (!OPENROUTER_API_KEY) {
+  if (!settings.AI_ENABLED) {
+    logger.info('Skipping AI reply because AI_ENABLED is false.');
+    return;
+  }
+
+  if (!settings.OPENROUTER_API_KEY) {
     logger.warn('Skipping AI reply because OPENROUTER_API_KEY is not configured.');
     return;
   }
@@ -260,7 +398,7 @@ async function handleAiReply({ groupJid, senderName, text, msg }) {
     logger.error(
       {
         error: serializeError(error),
-        model: OPENROUTER_MODEL
+        model: settings.OPENROUTER_MODEL
       },
       'Failed to create OpenRouter reply.'
     );
@@ -342,7 +480,7 @@ async function handleIncomingMessages({ messages, type }) {
         continue;
       }
 
-      if (isDiscoveryMode) {
+      if (isDiscoveryMode()) {
         logger.info(
           {
             groupJid,
@@ -355,8 +493,13 @@ async function handleIncomingMessages({ messages, type }) {
       }
 
       // Safety gates: no private chats, no self replies, and no unapproved groups.
-      if (groupJid !== ALLOWED_GROUP_JID) {
-        logger.debug({ groupJid, allowedGroupJid: ALLOWED_GROUP_JID }, 'Ignoring message from another group.');
+      if (!settings.BOT_ENABLED) {
+        logger.info({ groupJid }, 'Ignoring message because BOT_ENABLED is false.');
+        continue;
+      }
+
+      if (groupJid !== settings.ALLOWED_GROUP_JID) {
+        logger.debug({ groupJid, allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'Ignoring message from another group.');
         continue;
       }
 
@@ -426,7 +569,7 @@ async function startBot() {
   }
 
   isStarting = true;
-  logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Starting WhatsApp group-only bot.');
+  logger.info({ allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'Starting WhatsApp group-only bot.');
 
   try {
     sock?.ev?.removeAllListeners?.();
@@ -464,7 +607,7 @@ async function startBot() {
       }
 
       if (connection === 'open') {
-        logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Bot connected successfully.');
+        logger.info({ allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'Bot connected successfully.');
       }
 
       if (connection === 'close') {
@@ -500,6 +643,20 @@ function shutdown(signal) {
   process.exit(0);
 }
 
+async function main() {
+  applySettings(defaultSettings, 'env-bootstrap');
+
+  const firebaseReady = initializeFirebaseSettings();
+  if (firebaseReady) {
+    await loadFirebaseSettingsOnce();
+    watchFirebaseSettings();
+  }
+
+  validateSettingsOrExit();
+
+  await startBot();
+}
+
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 process.on('uncaughtException', (error) => {
@@ -517,7 +674,7 @@ process.on('unhandledRejection', (reason) => {
   process.exit(1);
 });
 
-startBot().catch((error) => {
+main().catch((error) => {
   logger.fatal({ error }, 'Failed to start bot.');
   process.exit(1);
 });
