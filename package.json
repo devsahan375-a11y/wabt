@@ -22,6 +22,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.19",
     "dotenv": "^16.4.7",
+    "firebase-admin": "^13.8.0",
     "pino": "^9.6.0",
     "qrcode-terminal": "^0.12.0"
   }
