@@ -49,6 +49,8 @@ let isShuttingDown = false;
 let isStarting = false;
 let reconnectTimer;
 const chatHistory = new Map();
+const processedMessages = new Set();
+const PROCESS_CACHE_LIMIT = 500;
 
 // Commands are plain words, so normalization keeps matching simple and predictable.
 function normalizeText(text = '') {
@@ -188,6 +190,25 @@ function validateSettingsOrExit() {
 
 function isDiscoveryMode() {
   return DISCOVERY_PLACEHOLDER_JIDS.has(settings.ALLOWED_GROUP_JID);
+}
+
+function rememberProcessedMessage(messageKey) {
+  const messageId = [
+    messageKey.remoteJid,
+    messageKey.participant || 'direct',
+    messageKey.id
+  ].join(':');
+
+  if (processedMessages.has(messageId)) return false;
+
+  processedMessages.add(messageId);
+
+  if (processedMessages.size > PROCESS_CACHE_LIMIT) {
+    const oldestMessageId = processedMessages.values().next().value;
+    processedMessages.delete(oldestMessageId);
+  }
+
+  return true;
 }
 
 function getErrorStatusCode(error) {
@@ -490,6 +511,11 @@ async function handleIncomingMessages({ messages, type }) {
       const isFromMe = msg.key.fromMe;
       const isGroupMessage = groupJid?.endsWith('@g.us');
 
+      if (!rememberProcessedMessage(msg.key)) {
+        logger.debug({ messageId: msg.key.id, groupJid }, 'Ignoring already processed message.');
+        continue;
+      }
+
       if (isFromMe) {
         logger.debug({ groupJid }, 'Ignoring message from bot account.');
         continue;
@@ -609,7 +635,7 @@ async function startBot() {
       version,
       auth: state,
       printQRInTerminal: false,
-      logger: pino({ level: 'silent' }),
+      logger: pino({ level: 'fatal' }),
       browser: ['Group Only Bot', 'Chrome', '1.0.0'],
       markOnlineOnConnect: false,
       syncFullHistory: false
