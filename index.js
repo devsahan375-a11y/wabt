@@ -1,0 +1,409 @@
+import 'dotenv/config';
+
+import process from 'node:process';
+import makeWASocket, {
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  useMultiFileAuthState
+} from '@whiskeysockets/baileys';
+import qrcode from 'qrcode-terminal';
+import pino from 'pino';
+
+const SESSION_FOLDER = 'session_data';
+const ALLOWED_GROUP_JID = process.env.ALLOWED_GROUP_JID;
+const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemini-2.5-flash';
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const AI_REPLY_TIMEOUT_MS = Number(process.env.AI_REPLY_TIMEOUT_MS || 30000);
+const AI_MAX_REPLY_LENGTH = Number(process.env.AI_MAX_REPLY_LENGTH || 1200);
+const AI_HISTORY_LIMIT = Number(process.env.AI_HISTORY_LIMIT || 12);
+const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS || 1200);
+const DISCOVERY_PLACEHOLDER_JIDS = new Set([
+  '000@g.us',
+  '0000@g.us',
+  '120363000000000000@g.us'
+]);
+
+const logger = pino({
+  level: LOG_LEVEL
+});
+
+if (!ALLOWED_GROUP_JID) {
+  logger.error('Missing ALLOWED_GROUP_JID. Copy .env.example to .env and set your group JID.');
+  process.exit(1);
+}
+
+if (!ALLOWED_GROUP_JID.endsWith('@g.us')) {
+  logger.error({ allowedGroupJid: ALLOWED_GROUP_JID }, 'ALLOWED_GROUP_JID must be a WhatsApp group JID ending with @g.us.');
+  process.exit(1);
+}
+
+const isDiscoveryMode = DISCOVERY_PLACEHOLDER_JIDS.has(ALLOWED_GROUP_JID);
+
+if (!OPENROUTER_API_KEY && !isDiscoveryMode) {
+  logger.warn('OPENROUTER_API_KEY is missing. Commands will work, but AI replies will be disabled.');
+}
+
+let sock;
+let isShuttingDown = false;
+const chatHistory = new Map();
+
+// Commands are plain words, so normalization keeps matching simple and predictable.
+function normalizeText(text = '') {
+  return text.trim().toLowerCase();
+}
+
+// Baileys stores text in different places depending on the message type.
+function getMessageText(message) {
+  if (!message) return '';
+
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    ''
+  );
+}
+
+// In groups, the sender is msg.key.participant. pushName gives a nicer display name when available.
+function getSenderName(msg, senderJid) {
+  return (
+    msg.pushName ||
+    msg.verifiedBizName ||
+    senderJid?.split('@')[0] ||
+    'there'
+  );
+}
+
+// Admin status is read from fresh group metadata so role changes are respected.
+async function isGroupAdmin(groupJid, senderJid) {
+  try {
+    const metadata = await sock.groupMetadata(groupJid);
+    const participant = metadata.participants.find((member) => member.id === senderJid);
+
+    return participant?.admin === 'admin' || participant?.admin === 'superadmin';
+  } catch (error) {
+    logger.error({ error }, 'Failed to check group admin status.');
+    return false;
+  }
+}
+
+async function sendReply(groupJid, text, quotedMessage) {
+  await sock.sendMessage(
+    groupJid,
+    { text },
+    { quoted: quotedMessage }
+  );
+}
+
+function getChatHistory(groupJid) {
+  return chatHistory.get(groupJid) || [];
+}
+
+function rememberChat(groupJid, role, content) {
+  const history = getChatHistory(groupJid);
+  history.push({ role, content });
+  chatHistory.set(groupJid, history.slice(-AI_HISTORY_LIMIT));
+}
+
+function buildAiPrompt(groupJid, senderName, text) {
+  const recentMessages = getChatHistory(groupJid);
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are a helpful knowledge and advice assistant inside a WhatsApp group.',
+        'Answer like ChatGPT or Gemini: useful, clear, practical, and accurate.',
+        'Still sound natural for a Sri Lankan WhatsApp chat, not robotic or overly formal.',
+        'The user may write in Sinhala, Singlish, or English. Reply in the same language and typing style.',
+        'For Sinhala, use natural everyday Sri Lankan Sinhala. For Singlish, use simple Singlish.',
+        'Help with information, explanations, study questions, tech questions, ideas, and advice.',
+        'If the question is vague, ask one short clarifying question. If you can infer the meaning, answer directly.',
+        'If the message is rude, teasing, or nonsense, do not escalate. Reply calmly or ask what they really need.',
+        'Do not start replies with the sender name. Do not repeat the sender name unless it is truly needed.',
+        'Do not mention AI, OpenRouter, language model, assistant, or bot.',
+        'Keep normal replies concise, but give steps or bullet points when the user asks for help or information.',
+        'Do not invent facts. If you are unsure, say that you are not sure and suggest how to verify.',
+        'Use emojis rarely, only when they feel natural.'
+      ].join(' ')
+    },
+    ...recentMessages,
+    {
+      role: 'user',
+      content: `${senderName}: ${text}`
+    }
+  ];
+}
+
+function trimReply(text) {
+  if (text.length <= AI_MAX_REPLY_LENGTH) return text;
+  return `${text.slice(0, AI_MAX_REPLY_LENGTH).trim()}...`;
+}
+
+async function getOpenRouterReply(groupJid, senderName, text) {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error('OPENROUTER_API_KEY is not configured.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AI_REPLY_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(OPENROUTER_API_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://localhost',
+        'X-OpenRouter-Title': 'WhatsApp Group Only Bot'
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: buildAiPrompt(groupJid, senderName, text),
+        temperature: 0.7,
+        max_tokens: AI_MAX_TOKENS
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = data?.error?.message || response.statusText || 'OpenRouter request failed.';
+      throw new Error(`OpenRouter error ${response.status}: ${message}`);
+    }
+
+    const reply = data?.choices?.[0]?.message?.content?.trim();
+
+    if (!reply) {
+      throw new Error('OpenRouter returned an empty reply.');
+    }
+
+    return trimReply(reply);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function handleAiReply({ groupJid, senderName, text, msg }) {
+  if (!OPENROUTER_API_KEY) {
+    logger.warn('Skipping AI reply because OPENROUTER_API_KEY is not configured.');
+    return;
+  }
+
+  try {
+    rememberChat(groupJid, 'user', `${senderName}: ${text}`);
+    const reply = await getOpenRouterReply(groupJid, senderName, text);
+    rememberChat(groupJid, 'assistant', reply);
+    await sendReply(groupJid, reply, msg);
+  } catch (error) {
+    logger.error({ error }, 'Failed to create OpenRouter AI reply.');
+    await sendReply(groupJid, `Sorry ${senderName}, AI reply failed right now.`, msg);
+  }
+}
+
+async function handleCommand({ groupJid, senderJid, senderName, text, msg }) {
+  const command = normalizeText(text);
+
+  // Known commands use fixed replies. Other messages are passed to AI.
+  switch (command) {
+    case 'hi':
+      await sendReply(groupJid, `Hi ${senderName}! Welcome to the group.`, msg);
+      return true;
+
+    case 'menu':
+      await sendReply(
+        groupJid,
+        [
+          `Hello ${senderName}, here are my commands:`,
+          '',
+          'hi - Get a greeting',
+          'menu - Show this command list',
+          'help - Learn what this bot does',
+          'ping - Check if the bot is online',
+          'admin - Admin-only reply',
+          '',
+          'Send any other message and I will answer with AI.'
+        ].join('\n'),
+        msg
+      );
+      return true;
+
+    case 'help':
+      await sendReply(
+        groupJid,
+        `Hi ${senderName}. I only work in this approved WhatsApp group. I can answer Sinhala, Singlish, and English messages using AI.`,
+        msg
+      );
+      return true;
+
+    case 'ping':
+      await sendReply(groupJid, `pong, ${senderName}`, msg);
+      return true;
+
+    case 'admin': {
+      const senderIsAdmin = await isGroupAdmin(groupJid, senderJid);
+
+      if (senderIsAdmin) {
+        await sendReply(groupJid, `Hello admin ${senderName}.`, msg);
+      }
+      return true;
+    }
+
+    default:
+      return false;
+  }
+}
+
+async function handleIncomingMessages({ messages, type }) {
+  if (type !== 'notify') return;
+
+  for (const msg of messages) {
+    try {
+      const groupJid = msg.key.remoteJid;
+      const isFromMe = msg.key.fromMe;
+      const isGroupMessage = groupJid?.endsWith('@g.us');
+
+      if (isFromMe) continue;
+      if (!isGroupMessage) continue;
+
+      if (isDiscoveryMode) {
+        logger.info(
+          {
+            groupJid,
+            senderName: getSenderName(msg, msg.key.participant),
+            message: getMessageText(msg.message)
+          },
+          'Group JID discovery: copy this groupJid into ALLOWED_GROUP_JID in your .env file.'
+        );
+        continue;
+      }
+
+      // Safety gates: no private chats, no self replies, and no unapproved groups.
+      if (groupJid !== ALLOWED_GROUP_JID) continue;
+
+      // In a group message, participant is the real sender JID.
+      const senderJid = msg.key.participant;
+      if (!senderJid) continue;
+
+      const text = getMessageText(msg.message);
+      if (!text.trim()) continue;
+
+      const senderName = getSenderName(msg, senderJid);
+
+      logger.info(
+        {
+          groupJid,
+          senderJid,
+          senderName,
+          message: text
+        },
+        'Allowed group message received.'
+      );
+
+      const commandWasHandled = await handleCommand({
+        groupJid,
+        senderJid,
+        senderName,
+        text,
+        msg
+      });
+
+      if (!commandWasHandled) {
+        await handleAiReply({
+          groupJid,
+          senderName,
+          text,
+          msg
+        });
+      }
+    } catch (error) {
+      logger.error({ error }, 'Failed to handle incoming message.');
+    }
+  }
+}
+
+async function startBot() {
+  logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Starting WhatsApp group-only bot.');
+
+  // useMultiFileAuthState writes reusable login credentials into session_data.
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+
+  logger.info({ version, isLatest }, 'Using Baileys version.');
+
+  sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger: pino({ level: 'silent' }),
+    browser: ['Group Only Bot', 'Chrome', '1.0.0'],
+    markOnlineOnConnect: false,
+    syncFullHistory: false
+  });
+
+  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('messages.upsert', handleIncomingMessages);
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      logger.info('Scan this QR code with WhatsApp to log in:');
+      qrcode.generate(qr, { small: true });
+    }
+
+    if (connection === 'open') {
+      logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Bot connected successfully.');
+    }
+
+    if (connection === 'close') {
+      const error = lastDisconnect?.error;
+      const statusCode = error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+      logger.warn(
+        {
+          statusCode,
+          shouldReconnect
+        },
+        'WhatsApp connection closed.'
+      );
+
+      if (shouldReconnect && !isShuttingDown) {
+        // Most disconnects are temporary, so start a fresh socket with the saved session.
+        logger.info('Reconnecting...');
+        await startBot();
+      } else {
+        logger.error('Bot logged out. Delete session_data and scan a new QR code if you want to log in again.');
+      }
+    }
+  });
+}
+
+function shutdown(signal) {
+  logger.info({ signal }, 'Shutting down bot.');
+  isShuttingDown = true;
+  sock?.end?.();
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+process.on('uncaughtException', (error) => {
+  logger.fatal({ error }, 'Uncaught exception.');
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.fatal({ reason }, 'Unhandled promise rejection.');
+  process.exit(1);
+});
+
+startBot().catch((error) => {
+  logger.fatal({ error }, 'Failed to start bot.');
+  process.exit(1);
+});

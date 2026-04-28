@@ -1,0 +1,28 @@
+{
+  "name": "whatsapp-group-only-baileys-bot",
+  "version": "1.0.0",
+  "description": "A production-ready WhatsApp group-only bot built with Node.js and Baileys.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "bot",
+    "group"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.19",
+    "dotenv": "^16.4.7",
+    "pino": "^9.6.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
