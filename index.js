@@ -47,11 +47,22 @@ if (!OPENROUTER_API_KEY && !isDiscoveryMode) {
 
 let sock;
 let isShuttingDown = false;
+let isStarting = false;
+let reconnectTimer;
 const chatHistory = new Map();
 
 // Commands are plain words, so normalization keeps matching simple and predictable.
 function normalizeText(text = '') {
   return text.trim().toLowerCase();
+}
+
+function getErrorStatusCode(error) {
+  return error?.output?.statusCode || error?.statusCode;
+}
+
+function isExpectedBaileysDisconnect(error) {
+  const statusCode = getErrorStatusCode(error);
+  return statusCode === 428 || statusCode === 440 || error?.message === 'Connection Closed';
 }
 
 // Baileys stores text in different places depending on the message type.
@@ -260,6 +271,8 @@ async function handleCommand({ groupJid, senderJid, senderName, text, msg }) {
 }
 
 async function handleIncomingMessages({ messages, type }) {
+  logger.debug({ type, count: messages.length }, 'messages.upsert event received.');
+
   if (type !== 'notify') return;
 
   for (const msg of messages) {
@@ -268,8 +281,15 @@ async function handleIncomingMessages({ messages, type }) {
       const isFromMe = msg.key.fromMe;
       const isGroupMessage = groupJid?.endsWith('@g.us');
 
-      if (isFromMe) continue;
-      if (!isGroupMessage) continue;
+      if (isFromMe) {
+        logger.debug({ groupJid }, 'Ignoring message from bot account.');
+        continue;
+      }
+
+      if (!isGroupMessage) {
+        logger.debug({ groupJid }, 'Ignoring private or non-group chat.');
+        continue;
+      }
 
       if (isDiscoveryMode) {
         logger.info(
@@ -284,14 +304,23 @@ async function handleIncomingMessages({ messages, type }) {
       }
 
       // Safety gates: no private chats, no self replies, and no unapproved groups.
-      if (groupJid !== ALLOWED_GROUP_JID) continue;
+      if (groupJid !== ALLOWED_GROUP_JID) {
+        logger.debug({ groupJid, allowedGroupJid: ALLOWED_GROUP_JID }, 'Ignoring message from another group.');
+        continue;
+      }
 
       // In a group message, participant is the real sender JID.
       const senderJid = msg.key.participant;
-      if (!senderJid) continue;
+      if (!senderJid) {
+        logger.debug({ groupJid }, 'Ignoring group message without participant.');
+        continue;
+      }
 
       const text = getMessageText(msg.message);
-      if (!text.trim()) continue;
+      if (!text.trim()) {
+        logger.debug({ groupJid, senderJid }, 'Ignoring empty or unsupported message type.');
+        continue;
+      }
 
       const senderName = getSenderName(msg, senderJid);
 
@@ -327,62 +356,90 @@ async function handleIncomingMessages({ messages, type }) {
   }
 }
 
+function scheduleReconnect() {
+  if (isShuttingDown || reconnectTimer) return;
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    startBot().catch((error) => {
+      logger.error({ error }, 'Reconnect attempt failed.');
+      scheduleReconnect();
+    });
+  }, 5000);
+}
+
 async function startBot() {
+  if (isStarting) {
+    logger.warn('Start skipped because the bot is already starting.');
+    return;
+  }
+
+  isStarting = true;
   logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Starting WhatsApp group-only bot.');
 
-  // useMultiFileAuthState writes reusable login credentials into session_data.
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
-  const { version, isLatest } = await fetchLatestBaileysVersion();
+  try {
+    sock?.ev?.removeAllListeners?.();
+    sock?.ws?.close?.();
+  } catch (error) {
+    logger.debug({ error }, 'Old socket cleanup skipped.');
+  }
 
-  logger.info({ version, isLatest }, 'Using Baileys version.');
+  try {
+    // useMultiFileAuthState writes reusable login credentials into session_data.
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_FOLDER);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false,
-    logger: pino({ level: 'silent' }),
-    browser: ['Group Only Bot', 'Chrome', '1.0.0'],
-    markOnlineOnConnect: false,
-    syncFullHistory: false
-  });
+    logger.info({ version, isLatest }, 'Using Baileys version.');
 
-  sock.ev.on('creds.update', saveCreds);
-  sock.ev.on('messages.upsert', handleIncomingMessages);
+    sock = makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: false,
+      logger: pino({ level: 'silent' }),
+      browser: ['Group Only Bot', 'Chrome', '1.0.0'],
+      markOnlineOnConnect: false,
+      syncFullHistory: false
+    });
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('messages.upsert', handleIncomingMessages);
 
-    if (qr) {
-      logger.info('Scan this QR code with WhatsApp to log in:');
-      qrcode.generate(qr, { small: true });
-    }
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-    if (connection === 'open') {
-      logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Bot connected successfully.');
-    }
-
-    if (connection === 'close') {
-      const error = lastDisconnect?.error;
-      const statusCode = error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-      logger.warn(
-        {
-          statusCode,
-          shouldReconnect
-        },
-        'WhatsApp connection closed.'
-      );
-
-      if (shouldReconnect && !isShuttingDown) {
-        // Most disconnects are temporary, so start a fresh socket with the saved session.
-        logger.info('Reconnecting...');
-        await startBot();
-      } else {
-        logger.error('Bot logged out. Delete session_data and scan a new QR code if you want to log in again.');
+      if (qr) {
+        logger.info('Scan this QR code with WhatsApp to log in:');
+        qrcode.generate(qr, { small: true });
       }
-    }
-  });
+
+      if (connection === 'open') {
+        logger.info({ allowedGroupJid: ALLOWED_GROUP_JID }, 'Bot connected successfully.');
+      }
+
+      if (connection === 'close') {
+        const error = lastDisconnect?.error;
+        const statusCode = getErrorStatusCode(error);
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        logger.warn(
+          {
+            statusCode,
+            shouldReconnect
+          },
+          'WhatsApp connection closed.'
+        );
+
+        if (shouldReconnect) {
+          logger.info('Reconnecting in 5 seconds...');
+          scheduleReconnect();
+        } else {
+          logger.error('Bot logged out. Delete session_data and scan a new QR code if you want to log in again.');
+        }
+      }
+    });
+  } finally {
+    isStarting = false;
+  }
 }
 
 function shutdown(signal) {
@@ -399,6 +456,12 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
+  if (isExpectedBaileysDisconnect(reason)) {
+    logger.warn({ reason }, 'Ignored expected Baileys disconnect rejection.');
+    scheduleReconnect();
+    return;
+  }
+
   logger.fatal({ reason }, 'Unhandled promise rejection.');
   process.exit(1);
 });
