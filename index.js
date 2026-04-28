@@ -43,6 +43,8 @@ const isDiscoveryMode = DISCOVERY_PLACEHOLDER_JIDS.has(ALLOWED_GROUP_JID);
 
 if (!OPENROUTER_API_KEY && !isDiscoveryMode) {
   logger.warn('OPENROUTER_API_KEY is missing. Commands will work, but AI replies will be disabled.');
+} else if (!isDiscoveryMode) {
+  logger.info({ model: OPENROUTER_MODEL }, 'OpenRouter replies are enabled.');
 }
 
 let sock;
@@ -63,6 +65,20 @@ function getErrorStatusCode(error) {
 function isExpectedBaileysDisconnect(error) {
   const statusCode = getErrorStatusCode(error);
   return statusCode === 428 || statusCode === 440 || error?.message === 'Connection Closed';
+}
+
+function serializeError(error) {
+  if (!error) return {};
+
+  return {
+    name: error.name,
+    message: error.message,
+    status: error.status,
+    code: error.code,
+    cause: error.cause?.message || error.cause,
+    stack: error.stack,
+    details: error.details
+  };
 }
 
 // Baileys stores text in different places depending on the message type.
@@ -181,11 +197,21 @@ async function getOpenRouterReply(groupJid, senderName, text) {
       })
     });
 
-    const data = await response.json().catch(() => ({}));
+    const responseText = await response.text();
+    let data = {};
+
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      data = { raw: responseText };
+    }
 
     if (!response.ok) {
       const message = data?.error?.message || response.statusText || 'OpenRouter request failed.';
-      throw new Error(`OpenRouter error ${response.status}: ${message}`);
+      const error = new Error(`OpenRouter error ${response.status}: ${message}`);
+      error.status = response.status;
+      error.details = data;
+      throw error;
     }
 
     const reply = data?.choices?.[0]?.message?.content?.trim();
@@ -212,8 +238,14 @@ async function handleAiReply({ groupJid, senderName, text, msg }) {
     rememberChat(groupJid, 'assistant', reply);
     await sendReply(groupJid, reply, msg);
   } catch (error) {
-    logger.error({ error }, 'Failed to create OpenRouter AI reply.');
-    await sendReply(groupJid, `Sorry ${senderName}, AI reply failed right now.`, msg);
+    logger.error(
+      {
+        error: serializeError(error),
+        model: OPENROUTER_MODEL
+      },
+      'Failed to create OpenRouter reply.'
+    );
+    await sendReply(groupJid, 'මේ වෙලාවේ උත්තරයක් ගන්න බැරි වුණා. ටිකකින් ආයෙම try කරන්න.', msg);
   }
 }
 
