@@ -251,11 +251,31 @@ async function isGroupAdmin(groupJid, senderJid) {
 }
 
 async function sendReply(groupJid, text, quotedMessage) {
-  logger.debug({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
+  logger.info({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
 
-  await sock.sendMessage(groupJid, { text }, { quoted: quotedMessage });
+  try {
+    const result = await sock.sendMessage(groupJid, { text });
 
-  logger.info({ groupJid }, 'WhatsApp reply sent.');
+    logger.info(
+      {
+        groupJid,
+        messageId: result?.key?.id,
+        remoteJid: result?.key?.remoteJid,
+        fromMe: result?.key?.fromMe
+      },
+      'WhatsApp reply sent.'
+    );
+
+    return result;
+  } catch (error) {
+    logger.error({ error: serializeError(error), groupJid }, 'WhatsApp reply failed.');
+
+    if (!quotedMessage) throw error;
+
+    const result = await sock.sendMessage(groupJid, { text });
+    logger.info({ groupJid, messageId: result?.key?.id }, 'WhatsApp reply sent after retry.');
+    return result;
+  }
 }
 
 function getChatHistory(groupJid) {
