@@ -9,13 +9,15 @@ import makeWASocket, {
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import { applicationDefault, cert, initializeApp } from 'firebase-admin/app';
-import { getDatabase } from 'firebase-admin/database';
+import { getDatabase, ServerValue } from 'firebase-admin/database';
 
 const SESSION_FOLDER = process.env.SESSION_FOLDER || 'session_data';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || 'https://wabt-f47e4-default-rtdb.firebaseio.com';
 const FIREBASE_SETTINGS_PATH = process.env.FIREBASE_SETTINGS_PATH || 'botSettings';
+const FIREBASE_RUNTIME_PATH = process.env.FIREBASE_RUNTIME_PATH || 'botRuntime';
+const TERMINAL_QR_ENABLED = process.env.TERMINAL_QR_ENABLED === 'true';
 const DISCOVERY_PLACEHOLDER_JIDS = new Set([
   '000@g.us',
   '0000@g.us',
@@ -43,6 +45,7 @@ const defaultSettings = {
 
 let settings = { ...defaultSettings };
 let firebaseSettingsRef;
+let firebaseRuntimeRef;
 
 let sock;
 let isShuttingDown = false;
@@ -147,11 +150,25 @@ function initializeFirebaseSettings() {
     });
 
     firebaseSettingsRef = getDatabase(app).ref(FIREBASE_SETTINGS_PATH);
-    logger.info({ path: FIREBASE_SETTINGS_PATH }, 'Firebase settings connected.');
+    firebaseRuntimeRef = getDatabase(app).ref(FIREBASE_RUNTIME_PATH);
+    logger.info({ settingsPath: FIREBASE_SETTINGS_PATH, runtimePath: FIREBASE_RUNTIME_PATH }, 'Firebase settings connected.');
     return true;
   } catch (error) {
     logger.error({ error: serializeError(error) }, 'Firebase settings connection failed. Falling back to .env settings.');
     return false;
+  }
+}
+
+async function updateBotRuntime(payload) {
+  if (!firebaseRuntimeRef) return;
+
+  try {
+    await firebaseRuntimeRef.update({
+      ...payload,
+      updatedAt: ServerValue.TIMESTAMP
+    });
+  } catch (error) {
+    logger.error({ error: serializeError(error) }, 'Failed to update Firebase runtime state.');
   }
 }
 
@@ -680,12 +697,26 @@ async function startBot() {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        logger.info('Scan this QR code with WhatsApp to log in:');
-        qrcode.generate(qr, { small: true });
+        logger.info('New WhatsApp QR generated. Open the admin panel to scan it.');
+
+        if (TERMINAL_QR_ENABLED) {
+          qrcode.generate(qr, { small: true });
+        }
+
+        void updateBotRuntime({
+          connection: 'qr',
+          qr,
+          qrUpdatedAt: ServerValue.TIMESTAMP
+        });
       }
 
       if (connection === 'open') {
         logger.info({ allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'Bot connected successfully.');
+        void updateBotRuntime({
+          connection: 'open',
+          qr: null,
+          connectedAt: ServerValue.TIMESTAMP
+        });
       }
 
       if (connection === 'close') {
@@ -700,6 +731,12 @@ async function startBot() {
           },
           'WhatsApp connection closed.'
         );
+
+        void updateBotRuntime({
+          connection: 'closed',
+          lastDisconnectStatusCode: statusCode,
+          shouldReconnect
+        });
 
         if (shouldReconnect) {
           logger.info('Reconnecting in 5 seconds...');
