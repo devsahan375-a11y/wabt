@@ -110,14 +110,33 @@ function applySettings(nextSettings, source) {
 function getFirebaseCredential() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
     const json = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
-    return cert(JSON.parse(json));
+    return cert(parseServiceAccountJson(json));
   }
 
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    return cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON));
+    return cert(parseServiceAccountJson(process.env.FIREBASE_SERVICE_ACCOUNT_JSON));
   }
 
   return applicationDefault();
+}
+
+function parseServiceAccountJson(rawValue) {
+  const trimmedValue = rawValue.trim();
+
+  try {
+    const parsedValue = JSON.parse(trimmedValue);
+    return typeof parsedValue === 'string' ? JSON.parse(parsedValue) : parsedValue;
+  } catch (firstError) {
+    const firstBrace = trimmedValue.indexOf('{');
+    const lastBrace = trimmedValue.lastIndexOf('}');
+
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      const extractedJson = trimmedValue.slice(firstBrace, lastBrace + 1);
+      return JSON.parse(extractedJson);
+    }
+
+    throw firstError;
+  }
 }
 
 function initializeFirebaseSettings() {
@@ -271,11 +290,16 @@ async function isGroupAdmin(groupJid, senderJid) {
   }
 }
 
-async function sendReply(groupJid, text, quotedMessage) {
+function getMentionTag(senderJid) {
+  return `@${senderJid.split('@')[0]}`;
+}
+
+async function sendReply(groupJid, text, options = {}) {
+  const mentions = options.mentions || [];
   logger.info({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
 
   try {
-    const result = await sock.sendMessage(groupJid, { text });
+    const result = await sock.sendMessage(groupJid, { text, mentions });
 
     logger.info(
       {
@@ -291,12 +315,19 @@ async function sendReply(groupJid, text, quotedMessage) {
   } catch (error) {
     logger.error({ error: serializeError(error), groupJid }, 'WhatsApp reply failed.');
 
-    if (!quotedMessage) throw error;
+    if (!mentions.length) throw error;
 
-    const result = await sock.sendMessage(groupJid, { text });
+    const result = await sock.sendMessage(groupJid, { text, mentions });
     logger.info({ groupJid, messageId: result?.key?.id }, 'WhatsApp reply sent after retry.');
     return result;
   }
+}
+
+async function sendMentionReply(groupJid, senderJid, text) {
+  const mentionTag = getMentionTag(senderJid);
+  await sendReply(groupJid, `${mentionTag} ${text}`, {
+    mentions: [senderJid]
+  });
 }
 
 function getChatHistory(groupJid) {
@@ -418,7 +449,7 @@ async function getOpenRouterReply(groupJid, senderName, text) {
   }
 }
 
-async function handleAiReply({ groupJid, senderName, text, msg }) {
+async function handleAiReply({ groupJid, senderJid, senderName, text }) {
   if (!settings.AI_ENABLED) {
     logger.info('Skipping AI reply because AI_ENABLED is false.');
     return;
@@ -434,7 +465,7 @@ async function handleAiReply({ groupJid, senderName, text, msg }) {
     rememberChat(groupJid, 'user', `${senderName}: ${text}`);
     const reply = await getOpenRouterReply(groupJid, senderName, text);
     rememberChat(groupJid, 'assistant', reply);
-    await sendReply(groupJid, reply, msg);
+    await sendMentionReply(groupJid, senderJid, reply);
   } catch (error) {
     logger.error(
       {
@@ -443,7 +474,7 @@ async function handleAiReply({ groupJid, senderName, text, msg }) {
       },
       'Failed to create OpenRouter reply.'
     );
-    await sendReply(groupJid, 'මේ වෙලාවේ උත්තරයක් ගන්න බැරි වුණා. ටිකකින් ආයෙම try කරන්න.', msg);
+    await sendMentionReply(groupJid, senderJid, 'මේ වෙලාවේ උත්තරයක් ගන්න බැරි වුණා. ටිකකින් ආයෙම try කරන්න.');
   }
 }
 
@@ -453,12 +484,13 @@ async function handleCommand({ groupJid, senderJid, senderName, text, msg }) {
   // Known commands use fixed replies. Other messages are passed to AI.
   switch (command) {
     case 'hi':
-      await sendReply(groupJid, `Hi ${senderName}! Welcome to the group.`, msg);
+      await sendMentionReply(groupJid, senderJid, `Hi ${senderName}! Welcome to the group.`);
       return true;
 
     case 'menu':
-      await sendReply(
+      await sendMentionReply(
         groupJid,
+        senderJid,
         [
           `Hello ${senderName}, here are my commands:`,
           '',
@@ -470,27 +502,26 @@ async function handleCommand({ groupJid, senderJid, senderName, text, msg }) {
           '',
           'Send any other message and I will answer with AI.'
         ].join('\n'),
-        msg
       );
       return true;
 
     case 'help':
-      await sendReply(
+      await sendMentionReply(
         groupJid,
+        senderJid,
         `Hi ${senderName}. I only work in this approved WhatsApp group. I can answer Sinhala, Singlish, and English messages using AI.`,
-        msg
       );
       return true;
 
     case 'ping':
-      await sendReply(groupJid, `pong, ${senderName}`, msg);
+      await sendMentionReply(groupJid, senderJid, `pong, ${senderName}`);
       return true;
 
     case 'admin': {
       const senderIsAdmin = await isGroupAdmin(groupJid, senderJid);
 
       if (senderIsAdmin) {
-        await sendReply(groupJid, `Hello admin ${senderName}.`, msg);
+        await sendMentionReply(groupJid, senderJid, `Hello admin ${senderName}.`);
       }
       return true;
     }
@@ -585,9 +616,9 @@ async function handleIncomingMessages({ messages, type }) {
       if (!commandWasHandled) {
         await handleAiReply({
           groupJid,
+          senderJid,
           senderName,
-          text,
-          msg
+          text
         });
       }
     } catch (error) {
