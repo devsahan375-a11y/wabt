@@ -11,7 +11,7 @@ import pino from 'pino';
 import { applicationDefault, cert, initializeApp } from 'firebase-admin/app';
 import { getDatabase } from 'firebase-admin/database';
 
-const SESSION_FOLDER = 'session_data';
+const SESSION_FOLDER = process.env.SESSION_FOLDER || 'session_data';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || 'https://wabt-f47e4-default-rtdb.firebaseio.com';
