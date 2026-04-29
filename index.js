@@ -290,16 +290,17 @@ async function isGroupAdmin(groupJid, senderJid) {
   }
 }
 
-function getMentionTag(senderJid) {
-  return `@${senderJid.split('@')[0]}`;
-}
-
 async function sendReply(groupJid, text, options = {}) {
   const mentions = options.mentions || [];
+  const quoted = options.quoted;
   logger.info({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
 
   try {
-    const result = await sock.sendMessage(groupJid, { text, mentions });
+    const result = await sock.sendMessage(
+      groupJid,
+      { text, mentions },
+      quoted ? { quoted } : undefined
+    );
 
     logger.info(
       {
@@ -315,7 +316,7 @@ async function sendReply(groupJid, text, options = {}) {
   } catch (error) {
     logger.error({ error: serializeError(error), groupJid }, 'WhatsApp reply failed.');
 
-    if (!mentions.length) throw error;
+    if (!quoted) throw error;
 
     const result = await sock.sendMessage(groupJid, { text, mentions });
     logger.info({ groupJid, messageId: result?.key?.id }, 'WhatsApp reply sent after retry.');
@@ -323,10 +324,10 @@ async function sendReply(groupJid, text, options = {}) {
   }
 }
 
-async function sendMentionReply(groupJid, senderJid, text) {
-  const mentionTag = getMentionTag(senderJid);
-  await sendReply(groupJid, `${mentionTag} ${text}`, {
-    mentions: [senderJid]
+async function sendQuotedReply(groupJid, text, quotedMessage, mentions = []) {
+  await sendReply(groupJid, text, {
+    quoted: quotedMessage,
+    mentions
   });
 }
 
@@ -449,7 +450,7 @@ async function getOpenRouterReply(groupJid, senderName, text) {
   }
 }
 
-async function handleAiReply({ groupJid, senderJid, senderName, text }) {
+async function handleAiReply({ groupJid, senderName, text, msg }) {
   if (!settings.AI_ENABLED) {
     logger.info('Skipping AI reply because AI_ENABLED is false.');
     return;
@@ -465,7 +466,7 @@ async function handleAiReply({ groupJid, senderJid, senderName, text }) {
     rememberChat(groupJid, 'user', `${senderName}: ${text}`);
     const reply = await getOpenRouterReply(groupJid, senderName, text);
     rememberChat(groupJid, 'assistant', reply);
-    await sendMentionReply(groupJid, senderJid, reply);
+    await sendQuotedReply(groupJid, reply, msg);
   } catch (error) {
     logger.error(
       {
@@ -474,7 +475,7 @@ async function handleAiReply({ groupJid, senderJid, senderName, text }) {
       },
       'Failed to create OpenRouter reply.'
     );
-    await sendMentionReply(groupJid, senderJid, 'මේ වෙලාවේ උත්තරයක් ගන්න බැරි වුණා. ටිකකින් ආයෙම try කරන්න.');
+    await sendQuotedReply(groupJid, 'මේ වෙලාවේ උත්තරයක් ගන්න බැරි වුණා. ටිකකින් ආයෙම try කරන්න.', msg);
   }
 }
 
@@ -484,13 +485,12 @@ async function handleCommand({ groupJid, senderJid, senderName, text, msg }) {
   // Known commands use fixed replies. Other messages are passed to AI.
   switch (command) {
     case 'hi':
-      await sendMentionReply(groupJid, senderJid, `Hi ${senderName}! Welcome to the group.`);
+      await sendQuotedReply(groupJid, `Hi ${senderName}! Welcome to the group.`, msg);
       return true;
 
     case 'menu':
-      await sendMentionReply(
+      await sendQuotedReply(
         groupJid,
-        senderJid,
         [
           `Hello ${senderName}, here are my commands:`,
           '',
@@ -502,26 +502,27 @@ async function handleCommand({ groupJid, senderJid, senderName, text, msg }) {
           '',
           'Send any other message and I will answer with AI.'
         ].join('\n'),
+        msg
       );
       return true;
 
     case 'help':
-      await sendMentionReply(
+      await sendQuotedReply(
         groupJid,
-        senderJid,
         `Hi ${senderName}. I only work in this approved WhatsApp group. I can answer Sinhala, Singlish, and English messages using AI.`,
+        msg
       );
       return true;
 
     case 'ping':
-      await sendMentionReply(groupJid, senderJid, `pong, ${senderName}`);
+      await sendQuotedReply(groupJid, `pong, ${senderName}`, msg);
       return true;
 
     case 'admin': {
       const senderIsAdmin = await isGroupAdmin(groupJid, senderJid);
 
       if (senderIsAdmin) {
-        await sendMentionReply(groupJid, senderJid, `Hello admin ${senderName}.`);
+        await sendQuotedReply(groupJid, `Hello admin ${senderName}.`, msg);
       }
       return true;
     }
@@ -616,9 +617,9 @@ async function handleIncomingMessages({ messages, type }) {
       if (!commandWasHandled) {
         await handleAiReply({
           groupJid,
-          senderJid,
           senderName,
-          text
+          text,
+          msg
         });
       }
     } catch (error) {
