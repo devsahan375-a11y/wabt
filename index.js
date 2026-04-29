@@ -17,6 +17,8 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const FIREBASE_DATABASE_URL = process.env.FIREBASE_DATABASE_URL || 'https://wabt-f47e4-default-rtdb.firebaseio.com';
 const FIREBASE_SETTINGS_PATH = process.env.FIREBASE_SETTINGS_PATH || 'botSettings';
 const FIREBASE_RUNTIME_PATH = process.env.FIREBASE_RUNTIME_PATH || 'botRuntime';
+const FIREBASE_CONVERSATIONS_PATH = process.env.FIREBASE_CONVERSATIONS_PATH || 'botConversations';
+const FIREBASE_SCHEDULES_PATH = process.env.FIREBASE_SCHEDULES_PATH || 'botSchedules';
 const TERMINAL_QR_ENABLED = process.env.TERMINAL_QR_ENABLED === 'true';
 const DISCOVERY_PLACEHOLDER_JIDS = new Set([
   '000@g.us',
@@ -40,12 +42,19 @@ const defaultSettings = {
   AI_TEMPERATURE: Number(process.env.AI_TEMPERATURE || 0.7),
   SYSTEM_PROMPT: process.env.SYSTEM_PROMPT || '',
   BOT_ENABLED: process.env.BOT_ENABLED !== 'false',
-  AI_ENABLED: process.env.AI_ENABLED !== 'false'
+  AI_ENABLED: process.env.AI_ENABLED !== 'false',
+  CHAT_PERMISSION_MODE: process.env.CHAT_PERMISSION_MODE || 'specific_group',
+  ALLOWED_PRIVATE_JID: process.env.ALLOWED_PRIVATE_JID || '',
+  TARGET_PROMPTS: {}
 };
 
 let settings = { ...defaultSettings };
 let firebaseSettingsRef;
 let firebaseRuntimeRef;
+let firebaseConversationsRef;
+let firebaseSchedulesRef;
+let schedules = {};
+let scheduleTimer;
 
 let sock;
 let isShuttingDown = false;
@@ -86,7 +95,10 @@ function normalizeSettings(rawSettings = {}) {
     AI_TEMPERATURE: toNumber(rawSettings.AI_TEMPERATURE, defaultSettings.AI_TEMPERATURE),
     SYSTEM_PROMPT: String(rawSettings.SYSTEM_PROMPT ?? defaultSettings.SYSTEM_PROMPT).trim(),
     BOT_ENABLED: toBoolean(rawSettings.BOT_ENABLED, defaultSettings.BOT_ENABLED),
-    AI_ENABLED: toBoolean(rawSettings.AI_ENABLED, defaultSettings.AI_ENABLED)
+    AI_ENABLED: toBoolean(rawSettings.AI_ENABLED, defaultSettings.AI_ENABLED),
+    CHAT_PERMISSION_MODE: String(rawSettings.CHAT_PERMISSION_MODE ?? defaultSettings.CHAT_PERMISSION_MODE).trim() || 'specific_group',
+    ALLOWED_PRIVATE_JID: String(rawSettings.ALLOWED_PRIVATE_JID ?? defaultSettings.ALLOWED_PRIVATE_JID).trim(),
+    TARGET_PROMPTS: rawSettings.TARGET_PROMPTS && typeof rawSettings.TARGET_PROMPTS === 'object' ? rawSettings.TARGET_PROMPTS : {}
   };
 }
 
@@ -100,7 +112,8 @@ function applySettings(nextSettings, source) {
       allowedGroupJid: settings.ALLOWED_GROUP_JID,
       model: settings.OPENROUTER_MODEL,
       botEnabled: settings.BOT_ENABLED,
-      aiEnabled: settings.AI_ENABLED
+      aiEnabled: settings.AI_ENABLED,
+      chatPermissionMode: settings.CHAT_PERMISSION_MODE
     },
     'Runtime settings loaded.'
   );
@@ -151,7 +164,17 @@ function initializeFirebaseSettings() {
 
     firebaseSettingsRef = getDatabase(app).ref(FIREBASE_SETTINGS_PATH);
     firebaseRuntimeRef = getDatabase(app).ref(FIREBASE_RUNTIME_PATH);
-    logger.info({ settingsPath: FIREBASE_SETTINGS_PATH, runtimePath: FIREBASE_RUNTIME_PATH }, 'Firebase settings connected.');
+    firebaseConversationsRef = getDatabase(app).ref(FIREBASE_CONVERSATIONS_PATH);
+    firebaseSchedulesRef = getDatabase(app).ref(FIREBASE_SCHEDULES_PATH);
+    logger.info(
+      {
+        settingsPath: FIREBASE_SETTINGS_PATH,
+        runtimePath: FIREBASE_RUNTIME_PATH,
+        conversationsPath: FIREBASE_CONVERSATIONS_PATH,
+        schedulesPath: FIREBASE_SCHEDULES_PATH
+      },
+      'Firebase settings connected.'
+    );
     return true;
   } catch (error) {
     logger.error({ error: serializeError(error) }, 'Firebase settings connection failed. Falling back to .env settings.');
@@ -212,20 +235,154 @@ function watchFirebaseSettings() {
   );
 }
 
+function watchSchedules() {
+  if (!firebaseSchedulesRef) return;
+
+  firebaseSchedulesRef.on(
+    'value',
+    (snapshot) => {
+      schedules = snapshot.val() || {};
+      logger.debug({ count: Object.keys(schedules).length }, 'Schedules refreshed.');
+    },
+    (error) => {
+      logger.error({ error: serializeError(error) }, 'Firebase schedules listener failed.');
+    }
+  );
+}
+
+async function processDueSchedules() {
+  if (!firebaseSchedulesRef || !sock) return;
+
+  const now = Date.now();
+  const dueEntries = Object.entries(schedules).filter(([, schedule]) => {
+    return schedule?.enabled !== false && schedule?.status !== 'sent' && schedule?.targetJid && schedule?.text && Number(schedule?.sendAt) <= now;
+  });
+
+  for (const [scheduleId, schedule] of dueEntries) {
+    try {
+      await firebaseSchedulesRef.child(scheduleId).update({
+        status: 'sending',
+        lastAttemptAt: ServerValue.TIMESTAMP
+      });
+
+      const result = await sock.sendMessage(schedule.targetJid, { text: schedule.text });
+
+      await logConversationMessage({
+        chatJid: schedule.targetJid,
+        chatType: isGroupJid(schedule.targetJid) ? 'group' : 'private',
+        senderJid: 'bot',
+        senderName: 'Bot',
+        direction: 'scheduled',
+        text: schedule.text,
+        messageId: result?.key?.id
+      });
+
+      await firebaseSchedulesRef.child(scheduleId).update({
+        status: 'sent',
+        sentAt: ServerValue.TIMESTAMP,
+        messageId: result?.key?.id || null
+      });
+    } catch (error) {
+      logger.error({ error: serializeError(error), scheduleId }, 'Scheduled message failed.');
+      await firebaseSchedulesRef.child(scheduleId).update({
+        status: 'failed',
+        error: error.message,
+        failedAt: ServerValue.TIMESTAMP
+      });
+    }
+  }
+}
+
+function startScheduleWorker() {
+  if (scheduleTimer) clearInterval(scheduleTimer);
+  scheduleTimer = setInterval(() => {
+    processDueSchedules().catch((error) => {
+      logger.error({ error: serializeError(error) }, 'Schedule worker failed.');
+    });
+  }, 30000);
+}
+
 function validateSettingsOrExit() {
-  if (!settings.ALLOWED_GROUP_JID) {
+  const needsGroup = ['group_only', 'specific_group'].includes(settings.CHAT_PERMISSION_MODE);
+  const needsPrivate = settings.CHAT_PERMISSION_MODE === 'specific_private';
+
+  if (needsGroup && !settings.ALLOWED_GROUP_JID) {
     logger.error('Missing ALLOWED_GROUP_JID. Set it in Firebase /botSettings or in .env.');
     process.exit(1);
   }
 
-  if (!settings.ALLOWED_GROUP_JID.endsWith('@g.us')) {
+  if (needsGroup && !settings.ALLOWED_GROUP_JID.endsWith('@g.us')) {
     logger.error({ allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'ALLOWED_GROUP_JID must be a WhatsApp group JID ending with @g.us.');
+    process.exit(1);
+  }
+
+  if (needsPrivate && !settings.ALLOWED_PRIVATE_JID) {
+    logger.error('Missing ALLOWED_PRIVATE_JID for specific_private mode.');
     process.exit(1);
   }
 }
 
 function isDiscoveryMode() {
   return DISCOVERY_PLACEHOLDER_JIDS.has(settings.ALLOWED_GROUP_JID);
+}
+
+function isGroupJid(jid = '') {
+  return jid.endsWith('@g.us');
+}
+
+function getPrivateSenderJid(msg) {
+  return msg.key.participant || msg.key.remoteJid;
+}
+
+function isChatAllowed(chatJid) {
+  const mode = settings.CHAT_PERMISSION_MODE;
+  const isGroup = isGroupJid(chatJid);
+
+  if (mode === 'all') return true;
+  if (mode === 'group_only') return isGroup;
+  if (mode === 'private_only') return !isGroup;
+  if (mode === 'specific_private') return !isGroup && chatJid === settings.ALLOWED_PRIVATE_JID;
+
+  return isGroup && chatJid === settings.ALLOWED_GROUP_JID;
+}
+
+function safeFirebaseKey(value = '') {
+  return value.replace(/[.#$/[\]]/g, '_');
+}
+
+function getTargetPrompt(chatJid) {
+  return String(settings.TARGET_PROMPTS?.[chatJid] || '').trim();
+}
+
+async function logConversationMessage({ chatJid, chatType, senderJid, senderName, direction, text, messageId }) {
+  if (!firebaseConversationsRef || !chatJid || !text) return;
+
+  const chatKey = safeFirebaseKey(chatJid);
+  const chatRef = firebaseConversationsRef.child(chatKey);
+
+  try {
+    await chatRef.child('meta').update({
+      chatJid,
+      chatType,
+      lastMessage: text.slice(0, 300),
+      lastSenderName: senderName || 'Bot',
+      lastDirection: direction,
+      updatedAt: ServerValue.TIMESTAMP
+    });
+
+    await chatRef.child('messages').push({
+      chatJid,
+      chatType,
+      senderJid,
+      senderName: senderName || 'Bot',
+      direction,
+      text,
+      messageId: messageId || null,
+      createdAt: ServerValue.TIMESTAMP
+    });
+  } catch (error) {
+    logger.error({ error: serializeError(error), chatJid }, 'Failed to log conversation message.');
+  }
 }
 
 function rememberProcessedMessage(messageKey) {
@@ -310,6 +467,7 @@ async function isGroupAdmin(groupJid, senderJid) {
 async function sendReply(groupJid, text, options = {}) {
   const mentions = options.mentions || [];
   const quoted = options.quoted;
+  const chatType = isGroupJid(groupJid) ? 'group' : 'private';
   logger.info({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
 
   try {
@@ -329,6 +487,16 @@ async function sendReply(groupJid, text, options = {}) {
       'WhatsApp reply sent.'
     );
 
+    await logConversationMessage({
+      chatJid: groupJid,
+      chatType,
+      senderJid: 'bot',
+      senderName: 'Bot',
+      direction: 'outgoing',
+      text,
+      messageId: result?.key?.id
+    });
+
     return result;
   } catch (error) {
     logger.error({ error: serializeError(error), groupJid }, 'WhatsApp reply failed.');
@@ -337,6 +505,15 @@ async function sendReply(groupJid, text, options = {}) {
 
     const result = await sock.sendMessage(groupJid, { text, mentions });
     logger.info({ groupJid, messageId: result?.key?.id }, 'WhatsApp reply sent after retry.');
+    await logConversationMessage({
+      chatJid: groupJid,
+      chatType,
+      senderJid: 'bot',
+      senderName: 'Bot',
+      direction: 'outgoing',
+      text,
+      messageId: result?.key?.id
+    });
     return result;
   }
 }
@@ -360,6 +537,7 @@ function rememberChat(groupJid, role, content) {
 
 function buildAiPrompt(groupJid, senderName, text) {
   const recentMessages = getChatHistory(groupJid);
+  const targetPrompt = getTargetPrompt(groupJid);
 
   return [
     {
@@ -378,7 +556,8 @@ function buildAiPrompt(groupJid, senderName, text) {
         'Keep normal replies concise, but give steps or bullet points when the user asks for help or information.',
         'Do not invent facts. If you are unsure, say that you are not sure and suggest how to verify.',
         'Use emojis rarely, only when they feel natural.',
-        settings.SYSTEM_PROMPT
+        settings.SYSTEM_PROMPT,
+        targetPrompt ? `Target-specific instruction: ${targetPrompt}` : ''
       ].join(' ')
     },
     ...recentMessages,
@@ -558,7 +737,8 @@ async function handleIncomingMessages({ messages, type }) {
     try {
       const groupJid = msg.key.remoteJid;
       const isFromMe = msg.key.fromMe;
-      const isGroupMessage = groupJid?.endsWith('@g.us');
+      const isGroupMessage = isGroupJid(groupJid);
+      const chatType = isGroupMessage ? 'group' : 'private';
 
       if (!rememberProcessedMessage(msg.key)) {
         logger.debug({ messageId: msg.key.id, groupJid }, 'Ignoring already processed message.');
@@ -570,12 +750,7 @@ async function handleIncomingMessages({ messages, type }) {
         continue;
       }
 
-      if (!isGroupMessage) {
-        logger.debug({ groupJid }, 'Ignoring private or non-group chat.');
-        continue;
-      }
-
-      if (isDiscoveryMode()) {
+      if (isDiscoveryMode() && isGroupMessage) {
         logger.info(
           {
             groupJid,
@@ -587,21 +762,28 @@ async function handleIncomingMessages({ messages, type }) {
         continue;
       }
 
-      // Safety gates: no private chats, no self replies, and no unapproved groups.
       if (!settings.BOT_ENABLED) {
         logger.info({ groupJid }, 'Ignoring message because BOT_ENABLED is false.');
         continue;
       }
 
-      if (groupJid !== settings.ALLOWED_GROUP_JID) {
-        logger.debug({ groupJid, allowedGroupJid: settings.ALLOWED_GROUP_JID }, 'Ignoring message from another group.');
+      if (!isChatAllowed(groupJid)) {
+        logger.debug(
+          {
+            groupJid,
+            mode: settings.CHAT_PERMISSION_MODE,
+            allowedGroupJid: settings.ALLOWED_GROUP_JID,
+            allowedPrivateJid: settings.ALLOWED_PRIVATE_JID
+          },
+          'Ignoring message because chat is not allowed.'
+        );
         continue;
       }
 
-      // In a group message, participant is the real sender JID.
-      const senderJid = msg.key.participant;
+      // In a group message, participant is the real sender JID. In private chat, remoteJid is the sender.
+      const senderJid = getPrivateSenderJid(msg);
       if (!senderJid) {
-        logger.debug({ groupJid }, 'Ignoring group message without participant.');
+        logger.debug({ groupJid }, 'Ignoring message without sender JID.');
         continue;
       }
 
@@ -622,6 +804,16 @@ async function handleIncomingMessages({ messages, type }) {
         },
         'Allowed group message received.'
       );
+
+      await logConversationMessage({
+        chatJid: groupJid,
+        chatType,
+        senderJid,
+        senderName,
+        direction: 'incoming',
+        text,
+        messageId: msg.key.id
+      });
 
       const commandWasHandled = await handleCommand({
         groupJid,
@@ -765,6 +957,8 @@ async function main() {
   if (firebaseReady) {
     await loadFirebaseSettingsOnce();
     watchFirebaseSettings();
+    watchSchedules();
+    startScheduleWorker();
   }
 
   validateSettingsOrExit();
