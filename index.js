@@ -1,5 +1,6 @@
 import 'dotenv/config';
 
+import fs from 'node:fs/promises';
 import process from 'node:process';
 import makeWASocket, {
   DisconnectReason,
@@ -20,6 +21,7 @@ const FIREBASE_RUNTIME_PATH = process.env.FIREBASE_RUNTIME_PATH || 'botRuntime';
 const FIREBASE_CONVERSATIONS_PATH = process.env.FIREBASE_CONVERSATIONS_PATH || 'botConversations';
 const FIREBASE_SCHEDULES_PATH = process.env.FIREBASE_SCHEDULES_PATH || 'botSchedules';
 const TERMINAL_QR_ENABLED = process.env.TERMINAL_QR_ENABLED === 'true';
+const CLEAR_SESSION_ON_LOGOUT = process.env.CLEAR_SESSION_ON_LOGOUT !== 'false';
 const DISCOVERY_PLACEHOLDER_JIDS = new Set([
   '000@g.us',
   '0000@g.us',
@@ -907,6 +909,19 @@ function scheduleReconnect() {
   }, 5000);
 }
 
+async function clearSessionData() {
+  logger.warn({ sessionFolder: SESSION_FOLDER }, 'Clearing WhatsApp session data.');
+
+  await fs.rm(SESSION_FOLDER, {
+    recursive: true,
+    force: true
+  });
+
+  await fs.mkdir(SESSION_FOLDER, {
+    recursive: true
+  });
+}
+
 async function startBot() {
   if (isStarting) {
     logger.warn('Start skipped because the bot is already starting.');
@@ -992,7 +1007,23 @@ async function startBot() {
           logger.info('Reconnecting in 5 seconds...');
           scheduleReconnect();
         } else {
-          logger.error('Bot logged out. Delete session_data and scan a new QR code if you want to log in again.');
+          logger.error('Bot logged out. Session must be cleared before a new QR can be generated.');
+          void updateBotRuntime({
+            connection: 'logged_out',
+            qr: null,
+            lastDisconnectStatusCode: statusCode
+          });
+
+          if (CLEAR_SESSION_ON_LOGOUT) {
+            clearSessionData()
+              .then(() => {
+                logger.info('Session cleared. Restarting in 5 seconds so a new QR can be generated.');
+                scheduleReconnect();
+              })
+              .catch((sessionError) => {
+                logger.error({ error: serializeError(sessionError) }, 'Failed to clear session data.');
+              });
+          }
         }
       }
     });
