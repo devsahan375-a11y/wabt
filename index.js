@@ -912,14 +912,51 @@ function scheduleReconnect() {
 async function clearSessionData() {
   logger.warn({ sessionFolder: SESSION_FOLDER }, 'Clearing WhatsApp session data.');
 
-  await fs.rm(SESSION_FOLDER, {
-    recursive: true,
-    force: true
-  });
+  try {
+    sock?.ev?.removeAllListeners?.();
+    sock?.ws?.close?.();
+    sock?.end?.();
+  } catch (error) {
+    logger.debug({ error: serializeError(error) }, 'Socket close before session clear skipped.');
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+
+  await clearDirectoryContents(SESSION_FOLDER);
 
   await fs.mkdir(SESSION_FOLDER, {
     recursive: true
   });
+}
+
+async function clearDirectoryContents(directory) {
+  await fs.mkdir(directory, { recursive: true });
+
+  const entries = await fs.readdir(directory, {
+    withFileTypes: true
+  });
+
+  for (const entry of entries) {
+    const entryPath = `${directory}/${entry.name}`;
+    await removeWithRetry(entryPath);
+  }
+}
+
+async function removeWithRetry(path, attempt = 1) {
+  try {
+    await fs.rm(path, {
+      recursive: true,
+      force: true
+    });
+  } catch (error) {
+    if ((error.code === 'EBUSY' || error.code === 'ENOTEMPTY') && attempt < 5) {
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      await removeWithRetry(path, attempt + 1);
+      return;
+    }
+
+    throw error;
+  }
 }
 
 async function startBot() {
@@ -1022,6 +1059,8 @@ async function startBot() {
               })
               .catch((sessionError) => {
                 logger.error({ error: serializeError(sessionError) }, 'Failed to clear session data.');
+                logger.info('Retrying logout recovery in 5 seconds.');
+                scheduleReconnect();
               });
           }
         }
