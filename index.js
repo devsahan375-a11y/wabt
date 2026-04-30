@@ -255,7 +255,7 @@ async function processDueSchedules() {
 
   const now = Date.now();
   const dueEntries = Object.entries(schedules).filter(([, schedule]) => {
-    return schedule?.enabled !== false && schedule?.status !== 'sent' && schedule?.targetJid && schedule?.text && Number(schedule?.sendAt) <= now;
+    return schedule?.enabled !== false && schedule?.status !== 'sending' && schedule?.targetJid && schedule?.text && Number(schedule?.sendAt) <= now;
   });
 
   for (const [scheduleId, schedule] of dueEntries) {
@@ -265,11 +265,12 @@ async function processDueSchedules() {
         lastAttemptAt: ServerValue.TIMESTAMP
       });
 
-      const result = await sock.sendMessage(schedule.targetJid, { text: schedule.text });
+      const targetJid = normalizeTargetJid(schedule.targetJid);
+      const result = await sock.sendMessage(targetJid, { text: schedule.text });
 
       await logConversationMessage({
-        chatJid: schedule.targetJid,
-        chatType: isGroupJid(schedule.targetJid) ? 'group' : 'private',
+        chatJid: targetJid,
+        chatType: isGroupJid(targetJid) ? 'group' : 'private',
         senderJid: 'bot',
         senderName: 'Bot',
         direction: 'scheduled',
@@ -277,11 +278,23 @@ async function processDueSchedules() {
         messageId: result?.key?.id
       });
 
-      await firebaseSchedulesRef.child(scheduleId).update({
-        status: 'sent',
+      const recurrence = schedule.recurrence || 'once';
+      const updatePayload = {
         sentAt: ServerValue.TIMESTAMP,
         messageId: result?.key?.id || null
-      });
+      };
+
+      if (recurrence === 'daily') {
+        updatePayload.status = 'pending';
+        updatePayload.sendAt = Number(schedule.sendAt) + 24 * 60 * 60 * 1000;
+      } else if (recurrence === 'weekly') {
+        updatePayload.status = 'pending';
+        updatePayload.sendAt = Number(schedule.sendAt) + 7 * 24 * 60 * 60 * 1000;
+      } else {
+        updatePayload.status = 'sent';
+      }
+
+      await firebaseSchedulesRef.child(scheduleId).update(updatePayload);
     } catch (error) {
       logger.error({ error: serializeError(error), scheduleId }, 'Scheduled message failed.');
       await firebaseSchedulesRef.child(scheduleId).update({
@@ -348,6 +361,16 @@ function isChatAllowed(chatJid) {
 
 function safeFirebaseKey(value = '') {
   return value.replace(/[.#$/[\]]/g, '_');
+}
+
+function normalizeTargetJid(value = '') {
+  const target = String(value).trim();
+
+  if (!target) return '';
+  if (target.includes('@')) return target;
+
+  const digits = target.replace(/\D/g, '');
+  return digits ? `${digits}@s.whatsapp.net` : target;
 }
 
 function getTargetPrompt(chatJid) {
