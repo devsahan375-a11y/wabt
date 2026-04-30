@@ -411,7 +411,16 @@ function normalizeTargetJid(value = '') {
 }
 
 function getTargetPrompt(chatJid) {
-  return String(settings.TARGET_PROMPTS?.[chatJid] || '').trim();
+  const prompts = settings.TARGET_PROMPTS || {};
+  const directPrompt = prompts[chatJid];
+
+  if (typeof directPrompt === 'string') return directPrompt.trim();
+
+  const encodedPrompt = prompts[safeFirebaseKey(chatJid)];
+  if (typeof encodedPrompt === 'string') return encodedPrompt.trim();
+  if (encodedPrompt?.prompt) return String(encodedPrompt.prompt).trim();
+
+  return '';
 }
 
 async function logConversationMessage({ chatJid, chatType, senderJid, senderName, direction, text, messageId }) {
