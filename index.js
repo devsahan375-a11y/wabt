@@ -259,7 +259,11 @@ async function processDueSchedules() {
       ? Boolean(schedule?.aiPrompt || schedule?.text)
       : Boolean(schedule?.text);
 
-    return schedule?.enabled !== false && schedule?.status !== 'sending' && schedule?.targetJid && hasMessageSource && Number(schedule?.sendAt) <= now;
+    return schedule?.enabled !== false
+      && !['sending', 'sent', 'completed'].includes(schedule?.status)
+      && schedule?.targetJid
+      && hasMessageSource
+      && Number(schedule?.sendAt) <= now;
   });
 
   for (const [scheduleId, schedule] of dueEntries) {
@@ -296,7 +300,9 @@ async function processDueSchedules() {
         updatePayload.status = 'pending';
         updatePayload.sendAt = Number(schedule.sendAt) + 7 * 24 * 60 * 60 * 1000;
       } else {
-        updatePayload.status = 'sent';
+        updatePayload.status = 'completed';
+        updatePayload.enabled = false;
+        updatePayload.completedAt = ServerValue.TIMESTAMP;
       }
 
       await firebaseSchedulesRef.child(scheduleId).update(updatePayload);
