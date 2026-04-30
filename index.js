@@ -266,7 +266,8 @@ async function processDueSchedules() {
       });
 
       const targetJid = normalizeTargetJid(schedule.targetJid);
-      const result = await sock.sendMessage(targetJid, { text: schedule.text });
+      const messageText = await getScheduleMessageText(schedule, targetJid);
+      const result = await sock.sendMessage(targetJid, { text: messageText });
 
       await logConversationMessage({
         chatJid: targetJid,
@@ -274,7 +275,7 @@ async function processDueSchedules() {
         senderJid: 'bot',
         senderName: 'Bot',
         direction: 'scheduled',
-        text: schedule.text,
+        text: messageText,
         messageId: result?.key?.id
       });
 
@@ -304,6 +305,28 @@ async function processDueSchedules() {
       });
     }
   }
+}
+
+async function getScheduleMessageText(schedule, targetJid) {
+  if (schedule.messageMode !== 'ai') {
+    return schedule.text;
+  }
+
+  const prompt = schedule.aiPrompt || schedule.text;
+
+  if (!prompt) {
+    throw new Error('AI schedule prompt is empty.');
+  }
+
+  return getOpenRouterReply(
+    targetJid,
+    'Admin schedule',
+    [
+      'Generate a WhatsApp message for a scheduled send.',
+      'Return only the final message text.',
+      `Instruction: ${prompt}`
+    ].join('\n')
+  );
 }
 
 function startScheduleWorker() {
