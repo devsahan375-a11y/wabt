@@ -255,7 +255,11 @@ async function processDueSchedules() {
 
   const now = Date.now();
   const dueEntries = Object.entries(schedules).filter(([, schedule]) => {
-    return schedule?.enabled !== false && schedule?.status !== 'sending' && schedule?.targetJid && schedule?.text && Number(schedule?.sendAt) <= now;
+    const hasMessageSource = schedule?.messageMode === 'ai'
+      ? Boolean(schedule?.aiPrompt || schedule?.text)
+      : Boolean(schedule?.text);
+
+    return schedule?.enabled !== false && schedule?.status !== 'sending' && schedule?.targetJid && hasMessageSource && Number(schedule?.sendAt) <= now;
   });
 
   for (const [scheduleId, schedule] of dueEntries) {
@@ -317,6 +321,8 @@ async function getScheduleMessageText(schedule, targetJid) {
   if (!prompt) {
     throw new Error('AI schedule prompt is empty.');
   }
+
+  logger.info({ targetJid }, 'Generating scheduled message with AI.');
 
   return getOpenRouterReply(
     targetJid,
