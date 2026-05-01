@@ -608,6 +608,51 @@
             <div class="panel-head"><h3>Saved Prompts</h3></div>
             <div id="targetPromptList" class="panel-body list"><div class="empty">No target prompts.</div></div>
           </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Contact Relations</h3></div>
+            <div class="panel-body">
+              <form id="contactRelationForm" class="list">
+                <div class="field">
+                  <label for="relationTargetType">Contact Type</label>
+                  <select id="relationTargetType">
+                    <option value="private">Private contact</option>
+                    <option value="jid">Already have JID</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="relationJid">Contact</label>
+                  <input id="relationJid" placeholder="9477xxxxxxx or user@s.whatsapp.net" required>
+                  <p id="relationPreview" class="hint">Private numbers are converted to @s.whatsapp.net automatically.</p>
+                </div>
+                <div class="field">
+                  <label for="relationType">Relationship</label>
+                  <select id="relationType">
+                    <option value="unknown">Unknown / other</option>
+                    <option value="girlfriend">Girlfriend</option>
+                    <option value="boyfriend">Boyfriend</option>
+                    <option value="mother">Mother</option>
+                    <option value="father">Father</option>
+                    <option value="teacher">Teacher</option>
+                    <option value="brother">Brother</option>
+                    <option value="sister">Sister</option>
+                    <option value="best_friend">Best friend</option>
+                    <option value="friend">Friend</option>
+                    <option value="boss">Boss</option>
+                    <option value="customer">Customer</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="relationNote">Extra Note</label>
+                  <textarea id="relationNote" placeholder="Optional: tone, boundaries, name, context..."></textarea>
+                </div>
+                <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Relation</button>
+              </form>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Saved Relations</h3></div>
+            <div id="contactRelationList" class="panel-body list"><div class="empty">No contact relations.</div></div>
+          </section>
         </div>
       </section>
 
@@ -687,6 +732,17 @@
                 <div class="field"><label for="aiHistoryLimit">History Limit</label><input id="aiHistoryLimit" data-key="AI_HISTORY_LIMIT" type="number"></div>
                 <div class="field"><label for="aiTemperature">Temperature</label><input id="aiTemperature" data-key="AI_TEMPERATURE" type="number" min="0" max="2" step="0.1"></div>
                 <div class="field full"><label for="systemPrompt">Global System Prompt</label><textarea id="systemPrompt" data-key="SYSTEM_PROMPT"></textarea></div>
+                <div class="field full">
+                  <div class="switch-row">
+                    <div><strong>Human Reply Simulation</strong><span>Seen, random delay, and typing presence before replies.</span></div>
+                    <label class="switch"><input id="humanReplyEnabled" data-key="HUMAN_REPLY_ENABLED" type="checkbox"></label>
+                  </div>
+                </div>
+                <div class="field"><label for="humanDelayMin">Seen Delay Min MS</label><input id="humanDelayMin" data-key="HUMAN_DELAY_MIN_MS" type="number"></div>
+                <div class="field"><label for="humanDelayMax">Seen Delay Max MS</label><input id="humanDelayMax" data-key="HUMAN_DELAY_MAX_MS" type="number"></div>
+                <div class="field"><label for="humanTypingMin">Typing Min MS</label><input id="humanTypingMin" data-key="HUMAN_TYPING_MIN_MS" type="number"></div>
+                <div class="field"><label for="humanTypingMax">Typing Max MS</label><input id="humanTypingMax" data-key="HUMAN_TYPING_MAX_MS" type="number"></div>
+                <div class="field"><label for="humanTypingSpeed">Typing Chars / Sec</label><input id="humanTypingSpeed" data-key="HUMAN_TYPING_CHARS_PER_SECOND" type="number"></div>
               </div>
               <div class="actions">
                 <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Settings</button>
@@ -735,6 +791,13 @@
       AI_TEMPERATURE: 0.7,
       SYSTEM_PROMPT: "",
       TARGET_PROMPTS: {},
+      CONTACT_RELATIONS: {},
+      HUMAN_REPLY_ENABLED: true,
+      HUMAN_DELAY_MIN_MS: 1500,
+      HUMAN_DELAY_MAX_MS: 6500,
+      HUMAN_TYPING_MIN_MS: 1200,
+      HUMAN_TYPING_MAX_MS: 9000,
+      HUMAN_TYPING_CHARS_PER_SECOND: 18,
       BOT_ENABLED: true,
       AI_ENABLED: true
     };
@@ -777,12 +840,14 @@
       settingsForm: $("#settingsForm"),
       permissionsForm: $("#permissionsForm"),
       targetPromptForm: $("#targetPromptForm"),
+      contactRelationForm: $("#contactRelationForm"),
       scheduleForm: $("#scheduleForm"),
       threadList: $("#threadList"),
       messageList: $("#messageList"),
       activeChatTitle: $("#activeChatTitle"),
       activeChatMeta: $("#activeChatMeta"),
       targetPromptList: $("#targetPromptList"),
+      contactRelationList: $("#contactRelationList"),
       scheduleList: $("#scheduleList"),
       settingsSnapshot: $("#settingsSnapshot"),
       toast: $("#toast")
@@ -833,6 +898,7 @@
       els.quickMode.textContent = currentSettings.CHAT_PERMISSION_MODE || "specific_group";
       els.quickModel.textContent = currentSettings.OPENROUTER_MODEL || "No model";
       renderTargetPrompts();
+      renderContactRelations();
     }
 
     function renderRuntime(runtime) {
@@ -875,7 +941,7 @@
       els.activeChatTitle.textContent = meta.chatJid || key;
       els.activeChatMeta.innerHTML = `${meta.chatType || "chat"} • ${messages.length} messages
         <span class="copyline"><code>${escapeHtml(meta.chatJid || key)}</code><button class="btn secondary" id="copyActiveJid" type="button">Copy ID</button></span>
-        <span class="copyline"><button class="btn secondary" id="usePromptJid" type="button">Use In Prompt</button><button class="btn secondary" id="useScheduleJid" type="button">Use In Schedule</button></span>`;
+        <span class="copyline"><button class="btn secondary" id="usePromptJid" type="button">Use In Prompt</button><button class="btn secondary" id="useRelationJid" type="button">Use In Relations</button><button class="btn secondary" id="useScheduleJid" type="button">Use In Schedule</button></span>`;
       $("#copyActiveJid").addEventListener("click", () => copyText(meta.chatJid || key));
       $("#usePromptJid").addEventListener("click", () => {
         $("#targetPromptType").value = "jid";
@@ -888,6 +954,12 @@
         $("#scheduleTarget").value = meta.chatJid || key;
         updateSchedulePreview();
         setTab("schedules");
+      });
+      $("#useRelationJid").addEventListener("click", () => {
+        $("#relationTargetType").value = "jid";
+        $("#relationJid").value = meta.chatJid || key;
+        updateRelationPreview();
+        setTab("prompts");
       });
       if (!messages.length) {
         els.messageList.innerHTML = '<div class="empty">No messages in this chat yet.</div>';
@@ -929,6 +1001,18 @@
       return typeof entry === "string" ? key : entry?.jid || key;
     }
 
+    function getRelationEntryJid(key, entry) {
+      return typeof entry === "string" ? key : entry?.jid || key;
+    }
+
+    function getRelationEntryType(entry) {
+      return typeof entry === "string" ? entry : entry?.relation || "unknown";
+    }
+
+    function getRelationEntryNote(entry) {
+      return typeof entry === "string" ? "" : entry?.note || "";
+    }
+
     async function copyText(value) {
       await navigator.clipboard.writeText(value);
       toast("Copied");
@@ -958,6 +1042,34 @@
         delete next[button.dataset.deletePrompt];
         await update(ref(database, "botSettings"), { TARGET_PROMPTS: next, updatedAt: serverTimestamp() });
         toast("Target prompt deleted");
+      }));
+    }
+
+    function renderContactRelations() {
+      const relations = currentSettings.CONTACT_RELATIONS || {};
+      const entries = Object.entries(relations);
+      if (!entries.length) {
+        els.contactRelationList.innerHTML = '<div class="empty">No contact relations.</div>';
+        return;
+      }
+      els.contactRelationList.innerHTML = entries.map(([key, relation]) => `<div class="item">
+        <strong>${escapeHtml(getRelationEntryJid(key, relation))}</strong>
+        <p>${escapeHtml(getRelationEntryType(relation))}${getRelationEntryNote(relation) ? ` • ${escapeHtml(getRelationEntryNote(relation))}` : ""}</p>
+        <div class="actions"><button class="btn secondary" data-edit-relation="${key}">Edit</button><button class="btn danger" data-delete-relation="${key}">Delete</button></div>
+      </div>`).join("");
+      $$("[data-edit-relation]").forEach((button) => button.addEventListener("click", () => {
+        const entry = relations[button.dataset.editRelation];
+        $("#relationTargetType").value = "jid";
+        $("#relationJid").value = getRelationEntryJid(button.dataset.editRelation, entry);
+        $("#relationType").value = getRelationEntryType(entry);
+        $("#relationNote").value = getRelationEntryNote(entry);
+        updateRelationPreview();
+      }));
+      $$("[data-delete-relation]").forEach((button) => button.addEventListener("click", async () => {
+        const next = { ...(currentSettings.CONTACT_RELATIONS || {}) };
+        delete next[button.dataset.deleteRelation];
+        await update(ref(database, "botSettings"), { CONTACT_RELATIONS: next, updatedAt: serverTimestamp() });
+        toast("Contact relation deleted");
       }));
     }
 
@@ -1045,6 +1157,26 @@
       toast("Target prompt saved");
     });
 
+    els.contactRelationForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const jid = normalizeTargetInput($("#relationJid").value, $("#relationTargetType").value);
+      const relationKey = safeFirebaseKey(jid);
+      await update(refs.settings, {
+        CONTACT_RELATIONS: {
+          ...(currentSettings.CONTACT_RELATIONS || {}),
+          [relationKey]: {
+            jid,
+            relation: $("#relationType").value,
+            note: $("#relationNote").value.trim()
+          }
+        },
+        updatedAt: serverTimestamp()
+      });
+      els.contactRelationForm.reset();
+      updateRelationPreview();
+      toast("Contact relation saved");
+    });
+
     function updateTargetPromptPreview() {
       const targetJid = normalizeTargetInput($("#targetPromptJid").value, $("#targetPromptType").value);
       $("#targetPromptPreview").textContent = targetJid ? `Prompt target: ${targetJid}` : "Private numbers are converted to @s.whatsapp.net automatically.";
@@ -1052,6 +1184,14 @@
 
     $("#targetPromptJid").addEventListener("input", updateTargetPromptPreview);
     $("#targetPromptType").addEventListener("change", updateTargetPromptPreview);
+
+    function updateRelationPreview() {
+      const targetJid = normalizeTargetInput($("#relationJid").value, $("#relationTargetType").value);
+      $("#relationPreview").textContent = targetJid ? `Relationship target: ${targetJid}` : "Private numbers are converted to @s.whatsapp.net automatically.";
+    }
+
+    $("#relationJid").addEventListener("input", updateRelationPreview);
+    $("#relationTargetType").addEventListener("change", updateRelationPreview);
 
     els.scheduleForm.addEventListener("submit", async (event) => {
       event.preventDefault();
