@@ -1,0 +1,1129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WABT Advanced Admin</title>
+  <style>
+    :root {
+      --bg: #f4f0ea;
+      --surface: rgba(255, 255, 255, 0.9);
+      --soft: rgba(255, 250, 242, 0.76);
+      --line: #decfc0;
+      --text: #211b24;
+      --muted: #766a72;
+      --brand: #0a7f72;
+      --brand-dark: #075d55;
+      --rose: #b93d6a;
+      --violet: #6050a8;
+      --amber: #c07916;
+      --ink: #17131d;
+      --danger: #b42318;
+      --warn: #b54708;
+      --ok: #067647;
+      --bubble-in: rgba(255, 255, 255, 0.94);
+      --bubble-out: #d9fdd3;
+      --shadow: 0 18px 45px rgba(46, 32, 28, 0.14);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        linear-gradient(115deg, rgba(10, 127, 114, 0.12), transparent 28%),
+        linear-gradient(235deg, rgba(185, 61, 106, 0.12), transparent 32%),
+        linear-gradient(0deg, rgba(192, 121, 22, 0.08), transparent 55%),
+        var(--bg);
+      background-size: 130% 130%, 140% 140%, 120% 120%, auto;
+      animation: canvasWash 18s ease-in-out infinite alternate;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: 0.28;
+      background-image:
+        linear-gradient(90deg, rgba(33, 27, 36, 0.045) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(33, 27, 36, 0.035) 1px, transparent 1px),
+        repeating-linear-gradient(135deg, transparent 0 18px, rgba(10, 127, 114, 0.05) 18px 19px);
+      background-size: 34px 34px, 34px 34px, 120px 120px;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; border: 0; }
+    textarea { resize: vertical; min-height: 100px; }
+
+    .hidden { display: none !important; }
+    .login {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .login-card {
+      width: min(460px, 100%);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+      animation: riseIn 420ms ease both;
+    }
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 270px 1fr;
+    }
+    .sidebar {
+      background:
+        linear-gradient(180deg, rgba(23, 19, 29, 0.98), rgba(18, 34, 39, 0.98)),
+        var(--ink);
+      color: white;
+      padding: 22px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+    .sidebar::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.22;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(150deg, transparent 0 22px, rgba(255,255,255,0.08) 22px 23px),
+        linear-gradient(120deg, rgba(10,127,114,0.32), transparent 42%, rgba(185,61,106,0.18));
+      animation: sideTexture 16s ease-in-out infinite alternate;
+    }
+    .sidebar > * { position: relative; z-index: 1; }
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+    }
+    .mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, var(--brand), var(--rose));
+      font-weight: 800;
+      box-shadow: 0 10px 25px rgba(10, 127, 114, 0.28);
+    }
+    .brand h1 { margin: 0; font-size: 18px; }
+    .brand p { margin: 3px 0 0; color: #a9b8c2; font-size: 13px; }
+    .nav { display: grid; gap: 7px; }
+    .nav button {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      height: 42px;
+      padding: 0 12px;
+      border-radius: 8px;
+      color: #c6d3db;
+      background: transparent;
+      text-align: left;
+      position: relative;
+      overflow: hidden;
+      transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+    }
+    .nav button.active { background: rgba(8,120,111,0.25); color: white; font-weight: 700; }
+    .nav button.active::after {
+      content: "";
+      position: absolute;
+      inset: auto 10px 5px 10px;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--brand), var(--amber), var(--rose));
+    }
+    .nav button:hover { transform: translateX(3px); background: rgba(255,255,255,0.1); color: white; }
+    .nav svg, .btn svg, .icon-btn svg { width: 18px; height: 18px; }
+    .account {
+      margin-top: auto;
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.08);
+      color: #c6d3db;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .main { padding: 24px; min-width: 0; }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 18px;
+    }
+    .top h2 { margin: 0; font-size: 30px; letter-spacing: 0; }
+    .top p { margin: 7px 0 0; color: var(--muted); }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--warn); }
+    .dot.ok { background: var(--ok); }
+    .grid { display: grid; grid-template-columns: 1fr 380px; gap: 18px; align-items: start; }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+      backdrop-filter: blur(16px);
+      animation: riseIn 380ms ease both;
+    }
+    .login-card::before, .panel::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--brand), var(--rose), var(--amber), var(--violet));
+      background-size: 220% 100%;
+      animation: chromaSlide 7s linear infinite;
+    }
+    .panel-head {
+      min-height: 58px;
+      padding: 15px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+    .panel-head h3 { margin: 0; font-size: 16px; }
+    .panel-body { padding: 18px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { display: grid; gap: 7px; }
+    .field.full { grid-column: 1 / -1; }
+    label { font-size: 13px; font-weight: 700; color: #344054; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 42px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.86);
+      color: var(--text);
+      outline: none;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(8,120,111,0.13);
+    }
+    .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .btn, .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 8px;
+      min-height: 40px;
+      padding: 0 14px;
+      font-weight: 700;
+      transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease;
+    }
+    .btn.primary {
+      background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+      color: white;
+      box-shadow: 0 10px 22px rgba(10, 127, 114, 0.22);
+    }
+    .btn.primary:hover { background: linear-gradient(135deg, var(--brand-dark), var(--violet)); }
+    .btn.secondary, .icon-btn { background: white; color: var(--text); border: 1px solid var(--line); }
+    .btn.danger { background: #fef3f2; color: var(--danger); border: 1px solid #fecdca; }
+    .icon-btn { width: 40px; padding: 0; }
+    .btn:hover, .icon-btn:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(33, 27, 36, 0.12); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .switch-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+      padding: 13px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+    .switch-row strong { display: block; }
+    .switch-row span { color: var(--muted); font-size: 12px; }
+    .switch input { width: 46px; accent-color: var(--brand); }
+    .chat-layout {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      min-height: 660px;
+    }
+    .thread-list {
+      border-right: 1px solid var(--line);
+      background: var(--soft);
+      overflow: auto;
+      max-height: 760px;
+    }
+    .thread {
+      width: 100%;
+      text-align: left;
+      padding: 13px 14px;
+      background: transparent;
+      border-bottom: 1px solid var(--line);
+      transition: background 150ms ease, transform 150ms ease;
+    }
+    .thread.active { background: white; border-left: 4px solid var(--brand); }
+    .thread:hover { background: rgba(255,255,255,0.74); transform: translateX(2px); }
+    .thread strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .thread span { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; margin-top: 4px; }
+    .chat-pane {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-width: 0;
+    }
+    .chat-title {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: white;
+    }
+    .chat-title strong { display: block; overflow-wrap: anywhere; }
+    .messages {
+      padding: 18px;
+      overflow: auto;
+      max-height: 700px;
+      background:
+        linear-gradient(rgba(255, 252, 246, 0.82), rgba(255, 252, 246, 0.82)),
+        repeating-linear-gradient(45deg, rgba(10,127,114,0.08) 0 1px, transparent 1px 18px),
+        repeating-linear-gradient(135deg, rgba(185,61,106,0.06) 0 1px, transparent 1px 24px);
+    }
+    .bubble {
+      max-width: min(720px, 84%);
+      margin: 0 0 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--bubble-in);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      animation: bubbleIn 220ms ease both;
+    }
+    .bubble.out {
+      margin-left: auto;
+      background: var(--bubble-out);
+    }
+    .bubble small {
+      display: block;
+      color: var(--muted);
+      margin-bottom: 5px;
+      font-weight: 700;
+    }
+    .bubble time {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-align: right;
+      margin-top: 6px;
+    }
+    .list { display: grid; gap: 10px; }
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--soft);
+    }
+    .item strong { display: block; overflow-wrap: anywhere; }
+    .item p { margin: 6px 0 0; color: var(--muted); white-space: pre-wrap; }
+    .copyline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 7px;
+    }
+    .copyline code {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: white;
+      border: 1px solid var(--line);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .empty { padding: 18px; color: var(--muted); text-align: center; }
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      max-width: min(440px, calc(100vw - 36px));
+      padding: 12px 14px;
+      border-radius: 8px;
+      color: white;
+      background: #111827;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: 160ms ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { background: var(--danger); }
+
+    @keyframes canvasWash {
+      from { background-position: 0% 20%, 100% 0%, 50% 100%, 0 0; }
+      to { background-position: 45% 0%, 60% 45%, 20% 60%, 0 0; }
+    }
+    @keyframes chromaSlide {
+      from { background-position: 0% 50%; }
+      to { background-position: 220% 50%; }
+    }
+    @keyframes riseIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes sideTexture {
+      from { transform: translateY(-2%); }
+      to { transform: translateY(2%); }
+    }
+    @keyframes bubbleIn {
+      from { opacity: 0; transform: translateY(5px) scale(0.99); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+      }
+    }
+
+    @media (max-width: 1050px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { position: sticky; top: 0; z-index: 5; }
+      .nav { grid-template-columns: repeat(3, 1fr); }
+      .grid, .chat-layout { grid-template-columns: 1fr; }
+      .thread-list { max-height: 280px; border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+    @media (max-width: 720px) {
+      .main { padding: 14px; }
+      .top { display: grid; }
+      .form-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loginView" class="login">
+    <section class="login-card">
+      <div class="brand" style="border-bottom: 1px solid var(--line); color: var(--text); padding-bottom: 16px; margin-bottom: 18px;">
+        <div class="mark">W</div>
+        <div>
+          <h1>WABT Admin</h1>
+          <p style="color: var(--muted);">Advanced bot operations</p>
+        </div>
+      </div>
+      <form id="loginForm" class="list">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="email" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="btn primary" type="submit"><i data-lucide="log-in"></i> Sign In</button>
+        <button id="createAccountBtn" class="btn secondary" type="button"><i data-lucide="user-plus"></i> Create Account</button>
+      </form>
+      <div style="height: 12px;"></div>
+      <button id="googleSignInBtn" class="btn secondary" type="button" style="width: 100%;"><i data-lucide="chrome"></i> Continue With Google</button>
+    </section>
+  </div>
+
+  <div id="appView" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark">W</div>
+        <div>
+          <h1>WABT</h1>
+          <p>Advanced Control</p>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="active" data-tab="dashboard"><i data-lucide="layout-dashboard"></i>Dashboard</button>
+        <button data-tab="conversations"><i data-lucide="messages-square"></i>Conversations</button>
+        <button data-tab="permissions"><i data-lucide="shield-check"></i>Permissions</button>
+        <button data-tab="prompts"><i data-lucide="file-pen-line"></i>Prompts</button>
+        <button data-tab="schedules"><i data-lucide="calendar-clock"></i>Schedules</button>
+        <button data-tab="settings"><i data-lucide="sliders-horizontal"></i>Settings</button>
+      </nav>
+      <div class="account">
+        <div id="accountEmail">Signed in</div>
+        <div style="height: 10px;"></div>
+        <button id="signOutBtn" class="btn secondary" type="button" style="width: 100%;"><i data-lucide="log-out"></i> Sign Out</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="top">
+        <div>
+          <h2 id="pageTitle">Dashboard</h2>
+          <p id="pageCopy">Monitor the bot, scan QR, and manage live behavior.</p>
+        </div>
+        <div class="pills">
+          <span class="pill"><span id="dbDot" class="dot"></span><span id="dbStatus">Syncing</span></span>
+          <span class="pill"><span id="runtimeDot" class="dot"></span><span id="runtimeStatus">Waiting</span></span>
+        </div>
+      </header>
+
+      <section id="dashboard" class="tab">
+        <div class="grid">
+          <section class="panel">
+            <div class="panel-head"><h3>WhatsApp Login</h3></div>
+            <div class="panel-body">
+              <div id="qrBox" class="empty">Waiting for QR code...</div>
+              <p class="hint" style="margin-top: 12px;">WhatsApp > Linked Devices > Link a Device, then scan this QR code.</p>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Quick Status</h3></div>
+            <div class="panel-body list">
+              <div class="item"><strong id="quickMode">Mode</strong><p>Current chat permission mode</p></div>
+              <div class="item"><strong id="quickModel">Model</strong><p>Active OpenRouter model</p></div>
+              <div class="item"><strong id="quickUpdated">Runtime</strong><p>Latest runtime update</p></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="conversations" class="tab hidden">
+        <section class="panel">
+          <div class="panel-head">
+            <h3>Conversation Viewer</h3>
+            <button id="refreshThreadsBtn" class="icon-btn" type="button" title="Refresh"><i data-lucide="refresh-cw"></i></button>
+          </div>
+          <div class="chat-layout">
+            <div id="threadList" class="thread-list"><div class="empty">No conversations yet.</div></div>
+            <div class="chat-pane">
+              <div class="chat-title"><strong id="activeChatTitle">Select a chat</strong><span class="hint" id="activeChatMeta"></span></div>
+              <div id="messageList" class="messages"><div class="empty">Messages will appear here.</div></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="permissions" class="tab hidden">
+        <section class="panel">
+          <div class="panel-head"><h3>Chat Permissions</h3></div>
+          <div class="panel-body">
+            <form id="permissionsForm" class="form-grid">
+              <div class="field full">
+                <label for="chatPermissionMode">Permission Mode</label>
+                <select id="chatPermissionMode" data-key="CHAT_PERMISSION_MODE">
+                  <option value="all">All chats</option>
+                  <option value="group_only">Group only</option>
+                  <option value="private_only">Private chat only</option>
+                  <option value="specific_group">Specific group only</option>
+                  <option value="specific_private">Specific private chat only</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="allowedGroupJid">Specific Group JID</label>
+                <input id="allowedGroupJid" data-key="ALLOWED_GROUP_JID" placeholder="120363...@g.us">
+              </div>
+              <div class="field">
+                <label for="allowedPrivateJid">Specific Private JID</label>
+                <input id="allowedPrivateJid" data-key="ALLOWED_PRIVATE_JID" placeholder="9477xxxxxxx@s.whatsapp.net">
+              </div>
+              <div class="field full">
+                <div class="switch-row">
+                  <div><strong>Bot Enabled</strong><span>Turn all bot replies on or off.</span></div>
+                  <label class="switch"><input id="botEnabled" data-key="BOT_ENABLED" type="checkbox"></label>
+                </div>
+              </div>
+              <div class="field full">
+                <div class="switch-row">
+                  <div><strong>AI Replies</strong><span>Allow non-command messages to use OpenRouter.</span></div>
+                  <label class="switch"><input id="aiEnabled" data-key="AI_ENABLED" type="checkbox"></label>
+                </div>
+              </div>
+              <div class="actions field full">
+                <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Permissions</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </section>
+
+      <section id="prompts" class="tab hidden">
+        <div class="grid">
+          <section class="panel">
+            <div class="panel-head"><h3>Target Prompt</h3></div>
+            <div class="panel-body">
+              <form id="targetPromptForm" class="list">
+                <div class="field">
+                  <label for="targetPromptType">Target Type</label>
+                  <select id="targetPromptType">
+                    <option value="private">Private contact</option>
+                    <option value="group">Group</option>
+                    <option value="jid">Already have JID</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="targetPromptJid">Target</label>
+                  <input id="targetPromptJid" placeholder="9477xxxxxxx or 120363...@g.us" required>
+                  <p id="targetPromptPreview" class="hint">Private numbers are converted to @s.whatsapp.net automatically.</p>
+                </div>
+                <div class="field">
+                  <label for="targetPromptText">Prompt</label>
+                  <textarea id="targetPromptText" placeholder="Special behavior for this chat..." required></textarea>
+                </div>
+                <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Target Prompt</button>
+              </form>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Saved Prompts</h3></div>
+            <div id="targetPromptList" class="panel-body list"><div class="empty">No target prompts.</div></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="schedules" class="tab hidden">
+        <div class="grid">
+          <section class="panel">
+            <div class="panel-head"><h3>Schedule Message</h3></div>
+            <div class="panel-body">
+              <form id="scheduleForm" class="list">
+                <div class="field">
+                  <label for="scheduleTargetType">Target Type</label>
+                  <select id="scheduleTargetType">
+                    <option value="private">Private contact</option>
+                    <option value="group">Group</option>
+                    <option value="jid">Already have JID</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="scheduleTarget">Target</label>
+                  <input id="scheduleTarget" placeholder="9477xxxxxxx or 120363...@g.us" required>
+                  <p id="scheduleTargetPreview" class="hint">Private numbers are converted to @s.whatsapp.net automatically.</p>
+                </div>
+                <div class="field">
+                  <label for="scheduleAt">Send At</label>
+                  <input id="scheduleAt" type="datetime-local" required>
+                </div>
+                <div class="field">
+                  <label for="scheduleRecurrence">Repeat</label>
+                  <select id="scheduleRecurrence">
+                    <option value="once">Once</option>
+                    <option value="daily">Every day at this time</option>
+                    <option value="weekly">Every week at this time</option>
+                  </select>
+                </div>
+                <div class="quick-grid">
+                  <button class="btn secondary" type="button" data-template="morning"><i data-lucide="sun"></i> Good Morning</button>
+                  <button class="btn secondary" type="button" data-template="night"><i data-lucide="moon"></i> Good Night</button>
+                </div>
+                <div class="field">
+                  <label for="scheduleMessageMode">Message Type</label>
+                  <select id="scheduleMessageMode">
+                    <option value="text">Specific message</option>
+                    <option value="ai">AI prompt generated message</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label id="scheduleTextLabel" for="scheduleText">Message</label>
+                  <textarea id="scheduleText" required></textarea>
+                  <p id="scheduleTextHint" class="hint">This exact text will be sent.</p>
+                </div>
+                <button class="btn primary" type="submit"><i data-lucide="calendar-plus"></i> Add Schedule</button>
+              </form>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>Scheduled Messages</h3></div>
+            <div id="scheduleList" class="panel-body list"><div class="empty">No scheduled messages.</div></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="settings" class="tab hidden">
+        <section class="panel">
+          <div class="panel-head">
+            <h3>AI And Runtime Settings</h3>
+            <button id="copySettingsBtn" class="icon-btn" type="button" title="Copy JSON"><i data-lucide="copy"></i></button>
+          </div>
+          <div class="panel-body">
+            <form id="settingsForm">
+              <div class="form-grid">
+                <div class="field"><label for="logLevel">Log Level</label><select id="logLevel" data-key="LOG_LEVEL"><option>info</option><option>debug</option><option>warn</option><option>error</option></select></div>
+                <div class="field"><label for="openRouterModel">OpenRouter Model</label><input id="openRouterModel" data-key="OPENROUTER_MODEL"></div>
+                <div class="field full"><label for="openRouterApiKey">OpenRouter API Key</label><input id="openRouterApiKey" data-key="OPENROUTER_API_KEY" type="password"></div>
+                <div class="field"><label for="aiReplyTimeoutMs">AI Timeout MS</label><input id="aiReplyTimeoutMs" data-key="AI_REPLY_TIMEOUT_MS" type="number"></div>
+                <div class="field"><label for="aiMaxReplyLength">Max Reply Length</label><input id="aiMaxReplyLength" data-key="AI_MAX_REPLY_LENGTH" type="number"></div>
+                <div class="field"><label for="aiMaxTokens">Max Tokens</label><input id="aiMaxTokens" data-key="AI_MAX_TOKENS" type="number"></div>
+                <div class="field"><label for="aiHistoryLimit">History Limit</label><input id="aiHistoryLimit" data-key="AI_HISTORY_LIMIT" type="number"></div>
+                <div class="field"><label for="aiTemperature">Temperature</label><input id="aiTemperature" data-key="AI_TEMPERATURE" type="number" min="0" max="2" step="0.1"></div>
+                <div class="field full"><label for="systemPrompt">Global System Prompt</label><textarea id="systemPrompt" data-key="SYSTEM_PROMPT"></textarea></div>
+              </div>
+              <div class="actions">
+                <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Settings</button>
+                <button id="resetBtn" class="btn secondary" type="button"><i data-lucide="rotate-ccw"></i> Defaults</button>
+              </div>
+            </form>
+            <pre id="settingsSnapshot" class="item" style="margin-top: 16px; overflow:auto;"></pre>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import { getAnalytics, isSupported as analyticsIsSupported } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+    import { createUserWithEmailAndPassword, getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import { getDatabase, onValue, push, ref, remove, serverTimestamp, set, update } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyA7W9FZBihvwjSfxY3cYVth1BC6pcKqAdE",
+      authDomain: "wabt-f47e4.firebaseapp.com",
+      databaseURL: "https://wabt-f47e4-default-rtdb.firebaseio.com",
+      projectId: "wabt-f47e4",
+      storageBucket: "wabt-f47e4.firebasestorage.app",
+      messagingSenderId: "559629919124",
+      appId: "1:559629919124:web:ae0981665fd8e15e6ee581",
+      measurementId: "G-CYNBDJ7QDR"
+    };
+
+    const defaults = {
+      ALLOWED_GROUP_JID: "",
+      ALLOWED_PRIVATE_JID: "",
+      CHAT_PERMISSION_MODE: "specific_group",
+      LOG_LEVEL: "info",
+      OPENROUTER_API_KEY: "",
+      OPENROUTER_MODEL: "google/gemini-2.5-flash",
+      AI_REPLY_TIMEOUT_MS: 30000,
+      AI_MAX_REPLY_LENGTH: 4000,
+      AI_MAX_TOKENS: 1800,
+      AI_HISTORY_LIMIT: 12,
+      AI_TEMPERATURE: 0.7,
+      SYSTEM_PROMPT: "",
+      TARGET_PROMPTS: {},
+      BOT_ENABLED: true,
+      AI_ENABLED: true
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const database = getDatabase(app);
+    const provider = new GoogleAuthProvider();
+    const refs = {
+      settings: ref(database, "botSettings"),
+      runtime: ref(database, "botRuntime"),
+      conversations: ref(database, "botConversations"),
+      schedules: ref(database, "botSchedules")
+    };
+
+    analyticsIsSupported().then((supported) => supported && getAnalytics(app)).catch(() => {});
+
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+    const els = {
+      loginView: $("#loginView"),
+      appView: $("#appView"),
+      loginForm: $("#loginForm"),
+      email: $("#email"),
+      password: $("#password"),
+      createAccountBtn: $("#createAccountBtn"),
+      googleSignInBtn: $("#googleSignInBtn"),
+      signOutBtn: $("#signOutBtn"),
+      accountEmail: $("#accountEmail"),
+      pageTitle: $("#pageTitle"),
+      pageCopy: $("#pageCopy"),
+      dbDot: $("#dbDot"),
+      dbStatus: $("#dbStatus"),
+      runtimeDot: $("#runtimeDot"),
+      runtimeStatus: $("#runtimeStatus"),
+      qrBox: $("#qrBox"),
+      quickMode: $("#quickMode"),
+      quickModel: $("#quickModel"),
+      quickUpdated: $("#quickUpdated"),
+      settingsForm: $("#settingsForm"),
+      permissionsForm: $("#permissionsForm"),
+      targetPromptForm: $("#targetPromptForm"),
+      scheduleForm: $("#scheduleForm"),
+      threadList: $("#threadList"),
+      messageList: $("#messageList"),
+      activeChatTitle: $("#activeChatTitle"),
+      activeChatMeta: $("#activeChatMeta"),
+      targetPromptList: $("#targetPromptList"),
+      scheduleList: $("#scheduleList"),
+      settingsSnapshot: $("#settingsSnapshot"),
+      toast: $("#toast")
+    };
+
+    let currentSettings = { ...defaults };
+    let conversations = {};
+    let selectedChatKey = null;
+    let unsubs = [];
+
+    function toast(message, type = "success") {
+      els.toast.textContent = message;
+      els.toast.classList.toggle("error", type === "error");
+      els.toast.classList.add("show");
+      setTimeout(() => els.toast.classList.remove("show"), 3000);
+    }
+
+    function formatTime(value) {
+      if (!value) return "";
+      return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+    }
+
+    function fieldValue(field) {
+      if (field.type === "checkbox") return field.checked;
+      if (field.type === "number") return Number(field.value || 0);
+      return field.value.trim();
+    }
+
+    function setField(field, value) {
+      if (field.type === "checkbox") field.checked = Boolean(value);
+      else field.value = value ?? "";
+    }
+
+    function collectSettings() {
+      const next = { ...currentSettings };
+      $$("[data-key]").forEach((field) => {
+        next[field.dataset.key] = fieldValue(field);
+      });
+      next.updatedAt = serverTimestamp();
+      next.updatedBy = auth.currentUser?.email || auth.currentUser?.uid || "unknown";
+      return next;
+    }
+
+    function renderSettings(value) {
+      currentSettings = { ...defaults, ...(value || {}) };
+      $$("[data-key]").forEach((field) => setField(field, currentSettings[field.dataset.key]));
+      els.settingsSnapshot.textContent = JSON.stringify(currentSettings, null, 2);
+      els.quickMode.textContent = currentSettings.CHAT_PERMISSION_MODE || "specific_group";
+      els.quickModel.textContent = currentSettings.OPENROUTER_MODEL || "No model";
+      renderTargetPrompts();
+    }
+
+    function renderRuntime(runtime) {
+      const connection = runtime?.connection || "unknown";
+      els.runtimeDot.classList.toggle("ok", connection === "open");
+      els.runtimeStatus.textContent = connection === "open" ? "Connected" : connection === "qr" ? "Scan QR" : connection;
+      els.quickUpdated.textContent = runtime?.updatedAt ? formatTime(runtime.updatedAt) : "Waiting";
+      els.qrBox.innerHTML = "";
+      if (runtime?.qr) {
+        new QRCode(els.qrBox, { text: runtime.qr, width: 280, height: 280, colorDark: "#111827", colorLight: "#ffffff", correctLevel: QRCode.CorrectLevel.M });
+      } else {
+        els.qrBox.className = "empty";
+        els.qrBox.textContent = connection === "open" ? "WhatsApp is connected." : "Waiting for QR code...";
+      }
+    }
+
+    function renderThreads() {
+      const entries = Object.entries(conversations).sort((a, b) => (b[1]?.meta?.updatedAt || 0) - (a[1]?.meta?.updatedAt || 0));
+      if (!entries.length) {
+        els.threadList.innerHTML = '<div class="empty">No conversations yet.</div>';
+        return;
+      }
+      els.threadList.innerHTML = entries.map(([key, chat]) => {
+        const meta = chat.meta || {};
+        return `<button class="thread ${key === selectedChatKey ? "active" : ""}" data-chat="${key}">
+          <strong>${meta.chatJid || key}</strong>
+          <span>${meta.lastSenderName || ""}: ${meta.lastMessage || ""}</span>
+        </button>`;
+      }).join("");
+      $$(".thread").forEach((button) => button.addEventListener("click", () => selectChat(button.dataset.chat)));
+      if (!selectedChatKey && entries[0]) selectChat(entries[0][0]);
+    }
+
+    function selectChat(key) {
+      selectedChatKey = key;
+      renderThreads();
+      const chat = conversations[key] || {};
+      const meta = chat.meta || {};
+      const messages = Object.values(chat.messages || {}).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      els.activeChatTitle.textContent = meta.chatJid || key;
+      els.activeChatMeta.innerHTML = `${meta.chatType || "chat"} • ${messages.length} messages
+        <span class="copyline"><code>${escapeHtml(meta.chatJid || key)}</code><button class="btn secondary" id="copyActiveJid" type="button">Copy ID</button></span>
+        <span class="copyline"><button class="btn secondary" id="usePromptJid" type="button">Use In Prompt</button><button class="btn secondary" id="useScheduleJid" type="button">Use In Schedule</button></span>`;
+      $("#copyActiveJid").addEventListener("click", () => copyText(meta.chatJid || key));
+      $("#usePromptJid").addEventListener("click", () => {
+        $("#targetPromptType").value = "jid";
+        $("#targetPromptJid").value = meta.chatJid || key;
+        updateTargetPromptPreview();
+        setTab("prompts");
+      });
+      $("#useScheduleJid").addEventListener("click", () => {
+        $("#scheduleTargetType").value = "jid";
+        $("#scheduleTarget").value = meta.chatJid || key;
+        updateSchedulePreview();
+        setTab("schedules");
+      });
+      if (!messages.length) {
+        els.messageList.innerHTML = '<div class="empty">No messages in this chat yet.</div>';
+        return;
+      }
+      els.messageList.innerHTML = messages.map((message) => {
+        const out = message.direction === "outgoing" || message.direction === "scheduled";
+        return `<div class="bubble ${out ? "out" : ""}">
+          <small>${message.senderName || (out ? "Bot" : "User")}</small>
+          ${escapeHtml(message.text || "")}
+          <time>${formatTime(message.createdAt)}</time>
+        </div>`;
+      }).join("");
+      els.messageList.scrollTop = els.messageList.scrollHeight;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
+    }
+
+    function normalizeTargetInput(value, type) {
+      const target = value.trim();
+      if (!target) return "";
+      if (target.includes("@")) return target;
+      if (type === "group") return target.endsWith("@g.us") ? target : `${target}@g.us`;
+      if (type === "jid") return target;
+      return `${target.replace(/\D/g, "")}@s.whatsapp.net`;
+    }
+
+    function safeFirebaseKey(value) {
+      return value.replace(/[.#$/[\]]/g, "_");
+    }
+
+    function getPromptEntryValue(entry) {
+      return typeof entry === "string" ? entry : entry?.prompt || "";
+    }
+
+    function getPromptEntryJid(key, entry) {
+      return typeof entry === "string" ? key : entry?.jid || key;
+    }
+
+    async function copyText(value) {
+      await navigator.clipboard.writeText(value);
+      toast("Copied");
+    }
+
+    function renderTargetPrompts() {
+      const prompts = currentSettings.TARGET_PROMPTS || {};
+      const entries = Object.entries(prompts);
+      if (!entries.length) {
+        els.targetPromptList.innerHTML = '<div class="empty">No target prompts.</div>';
+        return;
+      }
+      els.targetPromptList.innerHTML = entries.map(([jid, prompt]) => `<div class="item">
+        <strong>${escapeHtml(getPromptEntryJid(jid, prompt))}</strong>
+        <p>${escapeHtml(getPromptEntryValue(prompt))}</p>
+        <div class="actions"><button class="btn secondary" data-edit-prompt="${jid}">Edit</button><button class="btn danger" data-delete-prompt="${jid}">Delete</button></div>
+      </div>`).join("");
+      $$("[data-edit-prompt]").forEach((button) => button.addEventListener("click", () => {
+        const entry = prompts[button.dataset.editPrompt];
+        $("#targetPromptType").value = "jid";
+        $("#targetPromptJid").value = getPromptEntryJid(button.dataset.editPrompt, entry);
+        $("#targetPromptText").value = getPromptEntryValue(entry);
+        updateTargetPromptPreview();
+      }));
+      $$("[data-delete-prompt]").forEach((button) => button.addEventListener("click", async () => {
+        const next = { ...(currentSettings.TARGET_PROMPTS || {}) };
+        delete next[button.dataset.deletePrompt];
+        await update(ref(database, "botSettings"), { TARGET_PROMPTS: next, updatedAt: serverTimestamp() });
+        toast("Target prompt deleted");
+      }));
+    }
+
+    function renderSchedules(value) {
+      const entries = Object.entries(value || {}).sort((a, b) => Number(a[1].sendAt || 0) - Number(b[1].sendAt || 0));
+      if (!entries.length) {
+        els.scheduleList.innerHTML = '<div class="empty">No scheduled messages.</div>';
+        return;
+      }
+      els.scheduleList.innerHTML = entries.map(([id, schedule]) => `<div class="item">
+        <strong>${schedule.targetJid}</strong>
+        <p>${escapeHtml(schedule.text || schedule.aiPrompt || "")}</p>
+        <p>${schedule.messageMode === "ai" ? "AI generated" : "Specific text"} • ${formatTime(schedule.sendAt)} • ${schedule.recurrence || "once"} • ${schedule.status || "pending"}${schedule.enabled === false ? " • stopped" : ""}</p>
+        <div class="actions"><button class="btn danger" data-delete-schedule="${id}">Delete</button></div>
+      </div>`).join("");
+      $$("[data-delete-schedule]").forEach((button) => button.addEventListener("click", async () => {
+        await remove(ref(database, `botSchedules/${button.dataset.deleteSchedule}`));
+        toast("Schedule deleted");
+      }));
+    }
+
+    function setTab(tab) {
+      $$(".tab").forEach((section) => section.classList.toggle("hidden", section.id !== tab));
+      $$(".nav button").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
+      const titles = {
+        dashboard: ["Dashboard", "Monitor runtime status and WhatsApp login."],
+        conversations: ["Conversations", "Review chats in a WhatsApp-style viewer."],
+        permissions: ["Permissions", "Control where the bot is allowed to reply."],
+        prompts: ["Target Prompts", "Add custom behavior for a specific group or private chat."],
+        schedules: ["Schedules", "Send planned messages to any target JID."],
+        settings: ["Settings", "Manage OpenRouter and global runtime options."]
+      };
+      els.pageTitle.textContent = titles[tab][0];
+      els.pageCopy.textContent = titles[tab][1];
+    }
+
+    function startListeners() {
+      unsubs.forEach((unsub) => unsub());
+      unsubs = [
+        onValue(refs.settings, (snapshot) => { renderSettings(snapshot.val()); els.dbDot.classList.add("ok"); els.dbStatus.textContent = "Synced"; }, (error) => toast(error.message, "error")),
+        onValue(refs.runtime, (snapshot) => renderRuntime(snapshot.val()), (error) => toast(error.message, "error")),
+        onValue(refs.conversations, (snapshot) => { conversations = snapshot.val() || {}; renderThreads(); if (selectedChatKey) selectChat(selectedChatKey); }, (error) => toast(error.message, "error")),
+        onValue(refs.schedules, (snapshot) => renderSchedules(snapshot.val()), (error) => toast(error.message, "error"))
+      ];
+    }
+
+    els.loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try { await signInWithEmailAndPassword(auth, els.email.value, els.password.value); toast("Signed in"); }
+      catch (error) { toast(error.message, "error"); }
+    });
+    els.createAccountBtn.addEventListener("click", async () => {
+      try { await createUserWithEmailAndPassword(auth, els.email.value, els.password.value); toast("Account created"); }
+      catch (error) { toast(error.message, "error"); }
+    });
+    els.googleSignInBtn.addEventListener("click", async () => {
+      try { await signInWithPopup(auth, provider); toast("Signed in with Google"); }
+      catch (error) { toast(error.message, "error"); }
+    });
+    els.signOutBtn.addEventListener("click", () => signOut(auth));
+    $$(".nav button").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
+
+    [els.settingsForm, els.permissionsForm].forEach((form) => form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await set(refs.settings, collectSettings());
+      toast("Settings saved");
+    }));
+
+    els.targetPromptForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const jid = normalizeTargetInput($("#targetPromptJid").value, $("#targetPromptType").value);
+      const promptKey = safeFirebaseKey(jid);
+      const prompt = $("#targetPromptText").value.trim();
+      await update(refs.settings, {
+        TARGET_PROMPTS: {
+          ...(currentSettings.TARGET_PROMPTS || {}),
+          [promptKey]: {
+            jid,
+            prompt
+          }
+        },
+        updatedAt: serverTimestamp()
+      });
+      els.targetPromptForm.reset();
+      toast("Target prompt saved");
+    });
+
+    function updateTargetPromptPreview() {
+      const targetJid = normalizeTargetInput($("#targetPromptJid").value, $("#targetPromptType").value);
+      $("#targetPromptPreview").textContent = targetJid ? `Prompt target: ${targetJid}` : "Private numbers are converted to @s.whatsapp.net automatically.";
+    }
+
+    $("#targetPromptJid").addEventListener("input", updateTargetPromptPreview);
+    $("#targetPromptType").addEventListener("change", updateTargetPromptPreview);
+
+    els.scheduleForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const sendAt = new Date($("#scheduleAt").value).getTime();
+      const targetType = $("#scheduleTargetType").value;
+      const targetJid = normalizeTargetInput($("#scheduleTarget").value, targetType);
+      await push(refs.schedules, {
+        targetType,
+        targetJid,
+        messageMode: $("#scheduleMessageMode").value,
+        text: $("#scheduleMessageMode").value === "text" ? $("#scheduleText").value.trim() : "",
+        aiPrompt: $("#scheduleMessageMode").value === "ai" ? $("#scheduleText").value.trim() : "",
+        sendAt,
+        recurrence: $("#scheduleRecurrence").value,
+        enabled: true,
+        status: "pending",
+        createdAt: serverTimestamp(),
+        createdBy: auth.currentUser?.email || auth.currentUser?.uid || "unknown"
+      });
+      els.scheduleForm.reset();
+      toast("Schedule added");
+    });
+
+    function updateSchedulePreview() {
+      const targetJid = normalizeTargetInput($("#scheduleTarget").value, $("#scheduleTargetType").value);
+      $("#scheduleTargetPreview").textContent = targetJid ? `Will send to: ${targetJid}` : "Private numbers are converted to @s.whatsapp.net automatically.";
+    }
+
+    $("#scheduleTarget").addEventListener("input", updateSchedulePreview);
+    $("#scheduleTargetType").addEventListener("change", updateSchedulePreview);
+
+    function updateScheduleMessageMode() {
+      const isAi = $("#scheduleMessageMode").value === "ai";
+      $("#scheduleTextLabel").textContent = isAi ? "AI Prompt" : "Message";
+      $("#scheduleText").placeholder = isAi ? "Example: Write a warm Sinhala good morning message for the group." : "";
+      $("#scheduleTextHint").textContent = isAi ? "The bot will generate a fresh message from this prompt when the schedule is due." : "This exact text will be sent.";
+    }
+
+    $("#scheduleMessageMode").addEventListener("change", updateScheduleMessageMode);
+    updateScheduleMessageMode();
+
+    $$("[data-template]").forEach((button) => button.addEventListener("click", () => {
+      if (button.dataset.template === "morning") {
+        $("#scheduleText").value = $("#scheduleMessageMode").value === "ai" ? "Write a warm good morning WhatsApp message in natural Sinhala or Singlish." : "Good morning! Have a great day.";
+        $("#scheduleRecurrence").value = "daily";
+      } else {
+        $("#scheduleText").value = $("#scheduleMessageMode").value === "ai" ? "Write a calm good night WhatsApp message in natural Sinhala or Singlish." : "Good night! Sleep well.";
+        $("#scheduleRecurrence").value = "daily";
+      }
+    }));
+
+    $("#copySettingsBtn").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(JSON.stringify(currentSettings, null, 2));
+      toast("Settings copied");
+    });
+    $("#resetBtn").addEventListener("click", () => renderSettings(defaults));
+    $("#refreshThreadsBtn").addEventListener("click", () => renderThreads());
+
+    onAuthStateChanged(auth, (user) => {
+      const signedIn = Boolean(user);
+      els.loginView.classList.toggle("hidden", signedIn);
+      els.appView.classList.toggle("hidden", !signedIn);
+      if (signedIn) {
+        els.accountEmail.textContent = user.email || user.displayName || user.uid;
+        startListeners();
+      } else {
+        unsubs.forEach((unsub) => unsub());
+        unsubs = [];
+      }
+    });
+
+    lucide.createIcons();
+  </script>
+</body>
+</html>
