@@ -47,7 +47,14 @@ const defaultSettings = {
   AI_ENABLED: process.env.AI_ENABLED !== 'false',
   CHAT_PERMISSION_MODE: process.env.CHAT_PERMISSION_MODE || 'specific_group',
   ALLOWED_PRIVATE_JID: process.env.ALLOWED_PRIVATE_JID || '',
-  TARGET_PROMPTS: {}
+  TARGET_PROMPTS: {},
+  CONTACT_RELATIONS: {},
+  HUMAN_REPLY_ENABLED: process.env.HUMAN_REPLY_ENABLED !== 'false',
+  HUMAN_DELAY_MIN_MS: Number(process.env.HUMAN_DELAY_MIN_MS || 1500),
+  HUMAN_DELAY_MAX_MS: Number(process.env.HUMAN_DELAY_MAX_MS || 6500),
+  HUMAN_TYPING_MIN_MS: Number(process.env.HUMAN_TYPING_MIN_MS || 1200),
+  HUMAN_TYPING_MAX_MS: Number(process.env.HUMAN_TYPING_MAX_MS || 9000),
+  HUMAN_TYPING_CHARS_PER_SECOND: Number(process.env.HUMAN_TYPING_CHARS_PER_SECOND || 18)
 };
 
 let settings = { ...defaultSettings };
@@ -100,7 +107,14 @@ function normalizeSettings(rawSettings = {}) {
     AI_ENABLED: toBoolean(rawSettings.AI_ENABLED, defaultSettings.AI_ENABLED),
     CHAT_PERMISSION_MODE: String(rawSettings.CHAT_PERMISSION_MODE ?? defaultSettings.CHAT_PERMISSION_MODE).trim() || 'specific_group',
     ALLOWED_PRIVATE_JID: String(rawSettings.ALLOWED_PRIVATE_JID ?? defaultSettings.ALLOWED_PRIVATE_JID).trim(),
-    TARGET_PROMPTS: rawSettings.TARGET_PROMPTS && typeof rawSettings.TARGET_PROMPTS === 'object' ? rawSettings.TARGET_PROMPTS : {}
+    TARGET_PROMPTS: rawSettings.TARGET_PROMPTS && typeof rawSettings.TARGET_PROMPTS === 'object' ? rawSettings.TARGET_PROMPTS : {},
+    CONTACT_RELATIONS: rawSettings.CONTACT_RELATIONS && typeof rawSettings.CONTACT_RELATIONS === 'object' ? rawSettings.CONTACT_RELATIONS : {},
+    HUMAN_REPLY_ENABLED: toBoolean(rawSettings.HUMAN_REPLY_ENABLED, defaultSettings.HUMAN_REPLY_ENABLED),
+    HUMAN_DELAY_MIN_MS: toNumber(rawSettings.HUMAN_DELAY_MIN_MS, defaultSettings.HUMAN_DELAY_MIN_MS),
+    HUMAN_DELAY_MAX_MS: toNumber(rawSettings.HUMAN_DELAY_MAX_MS, defaultSettings.HUMAN_DELAY_MAX_MS),
+    HUMAN_TYPING_MIN_MS: toNumber(rawSettings.HUMAN_TYPING_MIN_MS, defaultSettings.HUMAN_TYPING_MIN_MS),
+    HUMAN_TYPING_MAX_MS: toNumber(rawSettings.HUMAN_TYPING_MAX_MS, defaultSettings.HUMAN_TYPING_MAX_MS),
+    HUMAN_TYPING_CHARS_PER_SECOND: toNumber(rawSettings.HUMAN_TYPING_CHARS_PER_SECOND, defaultSettings.HUMAN_TYPING_CHARS_PER_SECOND)
   };
 }
 
@@ -334,6 +348,7 @@ async function getScheduleMessageText(schedule, targetJid) {
 
   return getOpenRouterReply(
     targetJid,
+    'scheduled-message',
     'Admin schedule',
     [
       'Generate a WhatsApp message for a scheduled send.',
@@ -421,6 +436,32 @@ function getTargetPrompt(chatJid) {
   if (encodedPrompt?.prompt) return String(encodedPrompt.prompt).trim();
 
   return '';
+}
+
+function getContactRelation(senderJid) {
+  const relations = settings.CONTACT_RELATIONS || {};
+  const directRelation = relations[senderJid];
+
+  if (typeof directRelation === 'string') {
+    return { relation: directRelation, note: '' };
+  }
+
+  const encodedRelation = relations[safeFirebaseKey(senderJid)];
+  if (typeof encodedRelation === 'string') {
+    return { relation: encodedRelation, note: '' };
+  }
+
+  if (encodedRelation?.relation) {
+    return {
+      relation: String(encodedRelation.relation).trim(),
+      note: String(encodedRelation.note || '').trim()
+    };
+  }
+
+  return {
+    relation: 'unknown',
+    note: ''
+  };
 }
 
 async function logConversationMessage({ chatJid, chatType, senderJid, senderName, direction, text, messageId }) {
@@ -540,6 +581,8 @@ async function sendReply(groupJid, text, options = {}) {
   logger.info({ groupJid, textLength: text.length }, 'Sending WhatsApp reply.');
 
   try {
+    await simulateHumanReply(groupJid, text, quoted);
+
     const result = await sock.sendMessage(
       groupJid,
       { text, mentions },
@@ -594,6 +637,41 @@ async function sendQuotedReply(groupJid, text, quotedMessage, mentions = []) {
   });
 }
 
+function randomBetween(min, max) {
+  const safeMin = Math.min(min, max);
+  const safeMax = Math.max(min, max);
+  return Math.floor(Math.random() * (safeMax - safeMin + 1)) + safeMin;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function simulateHumanReply(chatJid, text, quotedMessage) {
+  if (!settings.HUMAN_REPLY_ENABLED) return;
+
+  try {
+    if (quotedMessage?.key) {
+      await sock.readMessages([quotedMessage.key]);
+    }
+
+    const delayMs = randomBetween(settings.HUMAN_DELAY_MIN_MS, settings.HUMAN_DELAY_MAX_MS);
+    await wait(delayMs);
+
+    const calculatedTypingMs = Math.ceil((text.length / settings.HUMAN_TYPING_CHARS_PER_SECOND) * 1000);
+    const typingMs = Math.min(
+      settings.HUMAN_TYPING_MAX_MS,
+      Math.max(settings.HUMAN_TYPING_MIN_MS, calculatedTypingMs)
+    );
+
+    await sock.sendPresenceUpdate('composing', chatJid);
+    await wait(typingMs);
+    await sock.sendPresenceUpdate('paused', chatJid);
+  } catch (error) {
+    logger.debug({ error: serializeError(error), chatJid }, 'Human reply simulation skipped.');
+  }
+}
+
 function getChatHistory(groupJid) {
   return chatHistory.get(groupJid) || [];
 }
@@ -604,9 +682,10 @@ function rememberChat(groupJid, role, content) {
   chatHistory.set(groupJid, history.slice(-settings.AI_HISTORY_LIMIT));
 }
 
-function buildAiPrompt(groupJid, senderName, text) {
+function buildAiPrompt(groupJid, senderJid, senderName, text) {
   const recentMessages = getChatHistory(groupJid);
   const targetPrompt = getTargetPrompt(groupJid);
+  const contactRelation = getContactRelation(senderJid);
 
   return [
     {
@@ -624,6 +703,8 @@ function buildAiPrompt(groupJid, senderName, text) {
         'Do not mention AI, OpenRouter, language model, assistant, or bot.',
         'Keep normal replies concise, but give steps or bullet points when the user asks for help or information.',
         'Do not invent facts. If you are unsure, say that you are not sure and suggest how to verify.',
+        `The sender relationship to the bot is: ${contactRelation.relation}. Adjust warmth, respect, formality, and boundaries to suit that relationship.`,
+        contactRelation.note ? `Extra relationship note: ${contactRelation.note}` : '',
         'Use emojis rarely, only when they feel natural.',
         settings.SYSTEM_PROMPT,
         targetPrompt ? `Target-specific instruction: ${targetPrompt}` : ''
@@ -642,7 +723,7 @@ function trimReply(text) {
   return `${text.slice(0, settings.AI_MAX_REPLY_LENGTH).trim()}...`;
 }
 
-async function getOpenRouterReply(groupJid, senderName, text) {
+async function getOpenRouterReply(groupJid, senderJid, senderName, text) {
   if (!settings.OPENROUTER_API_KEY) {
     throw new Error('OPENROUTER_API_KEY is not configured.');
   }
@@ -672,7 +753,7 @@ async function getOpenRouterReply(groupJid, senderName, text) {
       },
       body: JSON.stringify({
         model: settings.OPENROUTER_MODEL,
-        messages: buildAiPrompt(groupJid, senderName, text),
+        messages: buildAiPrompt(groupJid, senderJid, senderName, text),
         temperature: settings.AI_TEMPERATURE,
         max_tokens: settings.AI_MAX_TOKENS
       })
@@ -715,7 +796,7 @@ async function getOpenRouterReply(groupJid, senderName, text) {
   }
 }
 
-async function handleAiReply({ groupJid, senderName, text, msg }) {
+async function handleAiReply({ groupJid, senderJid, senderName, text, msg }) {
   if (!settings.AI_ENABLED) {
     logger.info('Skipping AI reply because AI_ENABLED is false.');
     return;
@@ -729,7 +810,7 @@ async function handleAiReply({ groupJid, senderName, text, msg }) {
   try {
     logger.info({ groupJid, senderName }, 'Creating AI reply.');
     rememberChat(groupJid, 'user', `${senderName}: ${text}`);
-    const reply = await getOpenRouterReply(groupJid, senderName, text);
+    const reply = await getOpenRouterReply(groupJid, senderJid, senderName, text);
     rememberChat(groupJid, 'assistant', reply);
     await sendQuotedReply(groupJid, reply, msg);
   } catch (error) {
@@ -895,6 +976,7 @@ async function handleIncomingMessages({ messages, type }) {
       if (!commandWasHandled) {
         await handleAiReply({
           groupJid,
+          senderJid,
           senderName,
           text,
           msg
