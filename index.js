@@ -443,24 +443,30 @@ function getContactRelation(senderJid) {
   const directRelation = relations[senderJid];
 
   if (typeof directRelation === 'string') {
-    return { relation: directRelation, note: '' };
+    return { relation: directRelation, note: '', promptMode: 'auto', customPrompt: '', autoReply: true };
   }
 
   const encodedRelation = relations[safeFirebaseKey(senderJid)];
   if (typeof encodedRelation === 'string') {
-    return { relation: encodedRelation, note: '' };
+    return { relation: encodedRelation, note: '', promptMode: 'auto', customPrompt: '', autoReply: true };
   }
 
   if (encodedRelation?.relation) {
     return {
       relation: String(encodedRelation.relation).trim(),
-      note: String(encodedRelation.note || '').trim()
+      note: String(encodedRelation.note || '').trim(),
+      promptMode: String(encodedRelation.promptMode || 'auto').trim(),
+      customPrompt: String(encodedRelation.customPrompt || '').trim(),
+      autoReply: encodedRelation.autoReply !== false
     };
   }
 
   return {
     relation: 'unknown',
-    note: ''
+    note: '',
+    promptMode: 'auto',
+    customPrompt: '',
+    autoReply: true
   };
 }
 
@@ -705,6 +711,7 @@ function buildAiPrompt(groupJid, senderJid, senderName, text) {
         'Do not invent facts. If you are unsure, say that you are not sure and suggest how to verify.',
         `The sender relationship to the bot is: ${contactRelation.relation}. Adjust warmth, respect, formality, and boundaries to suit that relationship.`,
         contactRelation.note ? `Extra relationship note: ${contactRelation.note}` : '',
+        contactRelation.promptMode === 'custom' && contactRelation.customPrompt ? `Contact custom instruction: ${contactRelation.customPrompt}` : '',
         'Use emojis rarely, only when they feel natural.',
         settings.SYSTEM_PROMPT,
         targetPrompt ? `Target-specific instruction: ${targetPrompt}` : ''
@@ -944,6 +951,12 @@ async function handleIncomingMessages({ messages, type }) {
       }
 
       const senderName = getSenderName(msg, senderJid);
+      const contactRelation = getContactRelation(senderJid);
+
+      if (!isGroupMessage && contactRelation.autoReply === false) {
+        logger.info({ senderJid, senderName }, 'Ignoring private message because contact autoReply is disabled.');
+        continue;
+      }
 
       logger.info(
         {
