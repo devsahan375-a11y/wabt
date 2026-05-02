@@ -557,6 +557,24 @@
               <div class="field">
                 <label for="allowedPrivateJid">Specific Private JID</label>
                 <input id="allowedPrivateJid" data-key="ALLOWED_PRIVATE_JID" placeholder="9477xxxxxxx@s.whatsapp.net">
+                <p class="hint">Legacy single-contact field. Use the list below for multiple contacts.</p>
+              </div>
+              <div class="field full">
+                <div class="item">
+                  <strong>Allowed Private Contacts</strong>
+                  <p>Add multiple numbers for Specific private chat only mode.</p>
+                  <div class="form-grid" style="margin-top: 12px;">
+                    <div class="field">
+                      <label for="allowedPrivateInput">Mobile Number Or JID</label>
+                      <input id="allowedPrivateInput" placeholder="9477xxxxxxx">
+                      <p id="allowedPrivatePreview" class="hint">Private numbers are converted automatically.</p>
+                    </div>
+                    <div class="field" style="align-self: end;">
+                      <button id="addAllowedPrivateBtn" class="btn secondary" type="button"><i data-lucide="plus"></i> Add Contact</button>
+                    </div>
+                  </div>
+                  <div id="allowedPrivateList" class="list" style="margin-top: 12px;"><div class="empty">No allowed private contacts.</div></div>
+                </div>
               </div>
               <div class="field full">
                 <div class="switch-row">
@@ -803,6 +821,7 @@
     const defaults = {
       ALLOWED_GROUP_JID: "",
       ALLOWED_PRIVATE_JID: "",
+      ALLOWED_PRIVATE_JIDS: {},
       CHAT_PERMISSION_MODE: "specific_group",
       LOG_LEVEL: "info",
       OPENROUTER_API_KEY: "",
@@ -862,6 +881,8 @@
       quickUpdated: $("#quickUpdated"),
       settingsForm: $("#settingsForm"),
       permissionsForm: $("#permissionsForm"),
+      allowedPrivateInput: $("#allowedPrivateInput"),
+      allowedPrivateList: $("#allowedPrivateList"),
       targetPromptForm: $("#targetPromptForm"),
       contactRelationForm: $("#contactRelationForm"),
       scheduleForm: $("#scheduleForm"),
@@ -922,6 +943,7 @@
       els.quickModel.textContent = currentSettings.OPENROUTER_MODEL || "No model";
       renderTargetPrompts();
       renderContactRelations();
+      renderAllowedPrivateContacts();
     }
 
     function renderRuntime(runtime) {
@@ -1111,6 +1133,29 @@
       }));
     }
 
+    function renderAllowedPrivateContacts() {
+      const contacts = currentSettings.ALLOWED_PRIVATE_JIDS || {};
+      const entries = Object.entries(contacts);
+      if (!entries.length) {
+        els.allowedPrivateList.innerHTML = '<div class="empty">No allowed private contacts.</div>';
+        return;
+      }
+      els.allowedPrivateList.innerHTML = entries.map(([key, value]) => {
+        const jid = typeof value === "string" ? value : value?.jid || key;
+        return `<div class="item">
+          <strong>${escapeHtml(jid)}</strong>
+          <div class="actions"><button class="btn secondary" data-copy-private="${jid}">Copy</button><button class="btn danger" data-delete-private="${key}">Delete</button></div>
+        </div>`;
+      }).join("");
+      $$("[data-copy-private]").forEach((button) => button.addEventListener("click", () => copyText(button.dataset.copyPrivate)));
+      $$("[data-delete-private]").forEach((button) => button.addEventListener("click", async () => {
+        const next = { ...(currentSettings.ALLOWED_PRIVATE_JIDS || {}) };
+        delete next[button.dataset.deletePrivate];
+        await update(refs.settings, { ALLOWED_PRIVATE_JIDS: next, updatedAt: serverTimestamp() });
+        toast("Allowed private contact removed");
+      }));
+    }
+
     function renderSchedules(value) {
       const entries = Object.entries(value || {}).sort((a, b) => Number(a[1].sendAt || 0) - Number(b[1].sendAt || 0));
       if (!entries.length) {
@@ -1176,6 +1221,31 @@
       await set(refs.settings, collectSettings());
       toast("Settings saved");
     }));
+
+    function updateAllowedPrivatePreview() {
+      const jid = normalizeTargetInput($("#allowedPrivateInput").value, "private");
+      $("#allowedPrivatePreview").textContent = jid ? `Will allow: ${jid}` : "Private numbers are converted automatically.";
+    }
+
+    $("#allowedPrivateInput").addEventListener("input", updateAllowedPrivatePreview);
+    $("#addAllowedPrivateBtn").addEventListener("click", async () => {
+      const jid = normalizeTargetInput($("#allowedPrivateInput").value, "private");
+      if (!jid) {
+        toast("Enter a mobile number or JID", "error");
+        return;
+      }
+      const key = safeFirebaseKey(jid);
+      await update(refs.settings, {
+        ALLOWED_PRIVATE_JIDS: {
+          ...(currentSettings.ALLOWED_PRIVATE_JIDS || {}),
+          [key]: { jid }
+        },
+        updatedAt: serverTimestamp()
+      });
+      $("#allowedPrivateInput").value = "";
+      updateAllowedPrivatePreview();
+      toast("Allowed private contact added");
+    });
 
     els.targetPromptForm.addEventListener("submit", async (event) => {
       event.preventDefault();
