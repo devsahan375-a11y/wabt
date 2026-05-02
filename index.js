@@ -47,6 +47,7 @@ const defaultSettings = {
   AI_ENABLED: process.env.AI_ENABLED !== 'false',
   CHAT_PERMISSION_MODE: process.env.CHAT_PERMISSION_MODE || 'specific_group',
   ALLOWED_PRIVATE_JID: process.env.ALLOWED_PRIVATE_JID || '',
+  ALLOWED_PRIVATE_JIDS: {},
   TARGET_PROMPTS: {},
   CONTACT_RELATIONS: {},
   HUMAN_REPLY_ENABLED: process.env.HUMAN_REPLY_ENABLED !== 'false',
@@ -107,6 +108,7 @@ function normalizeSettings(rawSettings = {}) {
     AI_ENABLED: toBoolean(rawSettings.AI_ENABLED, defaultSettings.AI_ENABLED),
     CHAT_PERMISSION_MODE: String(rawSettings.CHAT_PERMISSION_MODE ?? defaultSettings.CHAT_PERMISSION_MODE).trim() || 'specific_group',
     ALLOWED_PRIVATE_JID: String(rawSettings.ALLOWED_PRIVATE_JID ?? defaultSettings.ALLOWED_PRIVATE_JID).trim(),
+    ALLOWED_PRIVATE_JIDS: rawSettings.ALLOWED_PRIVATE_JIDS && typeof rawSettings.ALLOWED_PRIVATE_JIDS === 'object' ? rawSettings.ALLOWED_PRIVATE_JIDS : {},
     TARGET_PROMPTS: rawSettings.TARGET_PROMPTS && typeof rawSettings.TARGET_PROMPTS === 'object' ? rawSettings.TARGET_PROMPTS : {},
     CONTACT_RELATIONS: rawSettings.CONTACT_RELATIONS && typeof rawSettings.CONTACT_RELATIONS === 'object' ? rawSettings.CONTACT_RELATIONS : {},
     HUMAN_REPLY_ENABLED: toBoolean(rawSettings.HUMAN_REPLY_ENABLED, defaultSettings.HUMAN_REPLY_ENABLED),
@@ -382,8 +384,11 @@ function validateSettingsOrExit() {
   }
 
   if (needsPrivate && !settings.ALLOWED_PRIVATE_JID) {
-    logger.error('Missing ALLOWED_PRIVATE_JID for specific_private mode.');
-    process.exit(1);
+    const allowedPrivateCount = Object.keys(settings.ALLOWED_PRIVATE_JIDS || {}).length;
+    if (!allowedPrivateCount) {
+      logger.error('Missing ALLOWED_PRIVATE_JID or ALLOWED_PRIVATE_JIDS for specific_private mode.');
+      process.exit(1);
+    }
   }
 }
 
@@ -406,7 +411,14 @@ function isChatAllowed(chatJid) {
   if (mode === 'all') return true;
   if (mode === 'group_only') return isGroup;
   if (mode === 'private_only') return !isGroup;
-  if (mode === 'specific_private') return !isGroup && chatJid === settings.ALLOWED_PRIVATE_JID;
+  if (mode === 'specific_private') {
+    const allowedPrivateJids = settings.ALLOWED_PRIVATE_JIDS || {};
+    return !isGroup && (
+      chatJid === settings.ALLOWED_PRIVATE_JID ||
+      Boolean(allowedPrivateJids[chatJid]) ||
+      Boolean(allowedPrivateJids[safeFirebaseKey(chatJid)])
+    );
+  }
 
   return isGroup && chatJid === settings.ALLOWED_GROUP_JID;
 }
