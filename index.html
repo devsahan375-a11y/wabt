@@ -476,6 +476,7 @@
         <button data-tab="conversations"><i data-lucide="messages-square"></i>Conversations</button>
         <button data-tab="permissions"><i data-lucide="shield-check"></i>Permissions</button>
         <button data-tab="prompts"><i data-lucide="file-pen-line"></i>Prompts</button>
+        <button data-tab="contacts"><i data-lucide="users-round"></i>Contacts</button>
         <button data-tab="schedules"><i data-lucide="calendar-clock"></i>Schedules</button>
         <button data-tab="settings"><i data-lucide="sliders-horizontal"></i>Settings</button>
       </nav>
@@ -608,6 +609,11 @@
             <div class="panel-head"><h3>Saved Prompts</h3></div>
             <div id="targetPromptList" class="panel-body list"><div class="empty">No target prompts.</div></div>
           </section>
+        </div>
+      </section>
+
+      <section id="contacts" class="tab hidden">
+        <div class="grid">
           <section class="panel">
             <div class="panel-head"><h3>Contact Relations</h3></div>
             <div class="panel-body">
@@ -642,15 +648,32 @@
                   </select>
                 </div>
                 <div class="field">
+                  <label for="relationPromptMode">Prompt Mode</label>
+                  <select id="relationPromptMode">
+                    <option value="auto">Auto prompt from relationship</option>
+                    <option value="custom">Custom prompt</option>
+                  </select>
+                </div>
+                <div class="field full">
+                  <div class="switch-row">
+                    <div><strong>Auto Reply For This Contact</strong><span>Turn off to exclude this contact from private auto replies.</span></div>
+                    <label class="switch"><input id="relationAutoReply" type="checkbox" checked></label>
+                  </div>
+                </div>
+                <div class="field">
                   <label for="relationNote">Extra Note</label>
                   <textarea id="relationNote" placeholder="Optional: tone, boundaries, name, context..."></textarea>
                 </div>
-                <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Relation</button>
+                <div class="field">
+                  <label for="relationCustomPrompt">Custom User Prompt</label>
+                  <textarea id="relationCustomPrompt" placeholder="Used only when prompt mode is Custom."></textarea>
+                </div>
+                <button class="btn primary" type="submit"><i data-lucide="save"></i> Save Contact</button>
               </form>
             </div>
           </section>
           <section class="panel">
-            <div class="panel-head"><h3>Saved Relations</h3></div>
+            <div class="panel-head"><h3>Saved Contacts</h3></div>
             <div id="contactRelationList" class="panel-body list"><div class="empty">No contact relations.</div></div>
           </section>
         </div>
@@ -959,7 +982,7 @@
         $("#relationTargetType").value = "jid";
         $("#relationJid").value = meta.chatJid || key;
         updateRelationPreview();
-        setTab("prompts");
+        setTab("contacts");
       });
       if (!messages.length) {
         els.messageList.innerHTML = '<div class="empty">No messages in this chat yet.</div>';
@@ -1013,6 +1036,18 @@
       return typeof entry === "string" ? "" : entry?.note || "";
     }
 
+    function getRelationEntryPromptMode(entry) {
+      return typeof entry === "string" ? "auto" : entry?.promptMode || "auto";
+    }
+
+    function getRelationEntryCustomPrompt(entry) {
+      return typeof entry === "string" ? "" : entry?.customPrompt || "";
+    }
+
+    function getRelationEntryAutoReply(entry) {
+      return typeof entry === "string" ? true : entry?.autoReply !== false;
+    }
+
     async function copyText(value) {
       await navigator.clipboard.writeText(value);
       toast("Copied");
@@ -1054,7 +1089,7 @@
       }
       els.contactRelationList.innerHTML = entries.map(([key, relation]) => `<div class="item">
         <strong>${escapeHtml(getRelationEntryJid(key, relation))}</strong>
-        <p>${escapeHtml(getRelationEntryType(relation))}${getRelationEntryNote(relation) ? ` • ${escapeHtml(getRelationEntryNote(relation))}` : ""}</p>
+        <p>${escapeHtml(getRelationEntryType(relation))} • ${getRelationEntryPromptMode(relation)} prompt • ${getRelationEntryAutoReply(relation) ? "auto reply on" : "auto reply off"}${getRelationEntryNote(relation) ? ` • ${escapeHtml(getRelationEntryNote(relation))}` : ""}</p>
         <div class="actions"><button class="btn secondary" data-edit-relation="${key}">Edit</button><button class="btn danger" data-delete-relation="${key}">Delete</button></div>
       </div>`).join("");
       $$("[data-edit-relation]").forEach((button) => button.addEventListener("click", () => {
@@ -1063,6 +1098,9 @@
         $("#relationJid").value = getRelationEntryJid(button.dataset.editRelation, entry);
         $("#relationType").value = getRelationEntryType(entry);
         $("#relationNote").value = getRelationEntryNote(entry);
+        $("#relationPromptMode").value = getRelationEntryPromptMode(entry);
+        $("#relationCustomPrompt").value = getRelationEntryCustomPrompt(entry);
+        $("#relationAutoReply").checked = getRelationEntryAutoReply(entry);
         updateRelationPreview();
       }));
       $$("[data-delete-relation]").forEach((button) => button.addEventListener("click", async () => {
@@ -1099,6 +1137,7 @@
         conversations: ["Conversations", "Review chats in a WhatsApp-style viewer."],
         permissions: ["Permissions", "Control where the bot is allowed to reply."],
         prompts: ["Target Prompts", "Add custom behavior for a specific group or private chat."],
+        contacts: ["Contacts", "Define who each contact is and how the bot should speak to them."],
         schedules: ["Schedules", "Send planned messages to any target JID."],
         settings: ["Settings", "Manage OpenRouter and global runtime options."]
       };
@@ -1167,7 +1206,10 @@
           [relationKey]: {
             jid,
             relation: $("#relationType").value,
-            note: $("#relationNote").value.trim()
+            note: $("#relationNote").value.trim(),
+            promptMode: $("#relationPromptMode").value,
+            customPrompt: $("#relationCustomPrompt").value.trim(),
+            autoReply: $("#relationAutoReply").checked
           }
         },
         updatedAt: serverTimestamp()
